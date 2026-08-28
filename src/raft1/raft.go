@@ -116,6 +116,7 @@ func (self *Raft) transToBeLeaderUnsafe() {
 	self.nextLogicIndex[self.me] = leaderLastLogicIndex + 1
 
 	self.stateIsLeader.Broadcast() // Active heartbeat.
+	self.needReplicate.Broadcast() // Active peer replicators.
 }
 
 func (self *Raft) physicalIndexUnsafe(logicIndex int) int {
@@ -153,7 +154,7 @@ func (self *Raft) maxMajorityMatchLogicIndexUnsafe() int {
 			}
 		}
 	}
-	// **IMPORTANT!**
+	// **IMPORTANT**
 	// Leader 不能直接 commit 当前 `currentTerm` 之前的 Log Entries.
 	// 此 Log Index 必须 `isCommitableUnsafe()` 检查后才可 Commit.
 	majorityCnt := len(self.peers)/2 + 1
@@ -237,6 +238,8 @@ func (self *Raft) AppendEntries(arg *AppendEntriesArg, reply *AppendEntriesReply
 		return
 	}
 
+	reply.Success = true
+
 	// Check conflict.
 	conflictOffset := 0
 	haveConflict := false
@@ -254,7 +257,6 @@ func (self *Raft) AppendEntries(arg *AppendEntriesArg, reply *AppendEntriesReply
 	}
 
 	if haveConflict {
-
 		conflictPhysicalIndex := prevPhysicalLogIndex + 1 + conflictOffset
 		for i := conflictPhysicalIndex; i < len(self.log); i++ {
 			curTerm := self.log[i].Term
@@ -265,9 +267,7 @@ func (self *Raft) AppendEntries(arg *AppendEntriesArg, reply *AppendEntriesReply
 				delete(self.termLogStartLogicIndex, curTerm)
 			}
 		}
-
 		self.log = append(self.log[:conflictPhysicalIndex], arg.Entries[conflictOffset:]...)
-
 		for _, newEntry := range arg.Entries[conflictOffset:] {
 			if _, ok := self.termLogStartLogicIndex[newEntry.Term]; ok == false {
 				self.termLogStartLogicIndex[newEntry.Term] = newEntry.LogicIndex
@@ -276,12 +276,18 @@ func (self *Raft) AppendEntries(arg *AppendEntriesArg, reply *AppendEntriesReply
 
 	}
 
+	lastMatchLogicIndex := arg.PrevLogIndex
+	if len(arg.Entries) > 0 {
+		lastMatchLogicIndex = arg.Entries[len(arg.Entries)-1].LogicIndex
+	}
+
+	// **IMPORTANT**
+	// 必须使用 `AppendEntries` 涉及的最后一个 Log Entry .
 	if arg.LeaderCommit > self.commitLogicIndex {
-		self.commitLogicIndex = min(arg.LeaderCommit, self.log[lastPhysicalLogIndex()].LogicIndex)
+		self.commitLogicIndex = min(arg.LeaderCommit, lastMatchLogicIndex)
 		self.needApply.Signal()
 	}
 
-	reply.Success = true
 }
 
 func (self *Raft) sendAppendEntries(server int, args *AppendEntriesArg, reply *AppendEntriesReply) bool {
@@ -494,7 +500,8 @@ func (self *Raft) startBackgroundHeartbeat() {
 					self.stateIsLeader.Wait()
 				}
 
-				// **IMPORTANT!** Heartbeart 不处理 Commit 逻辑.
+				// **IMPORTANT**
+				// Heartbeart 不处理 Commit 逻辑.
 				// 永远发送空 `entries` .
 				// 但需要通知 Commit goroutine.
 				var arg AppendEntriesArg = AppendEntriesArg{
@@ -502,7 +509,7 @@ func (self *Raft) startBackgroundHeartbeat() {
 					LeaderId:     self.me,
 					PrevLogIndex: self.nextLogicIndex[peerId] - 1,
 					PrevLogTerm:  self.log[self.physicalIndexUnsafe(self.nextLogicIndex[peerId]-1)].Term,
-					Entries:      append([]LogEntry(nil), self.log[self.physicalIndexUnsafe(self.nextLogicIndex[peerId]):]...),
+					Entries:      []LogEntry(nil),
 					LeaderCommit: self.commitLogicIndex,
 				}
 				self.mu.Unlock()
@@ -707,6 +714,13 @@ func (self *Raft) startBackgroundLogReplicator() {
 					self.needReplicate.Wait()
 				}
 
+				// **IMPORTANT**
+				// 在 Worker 当选 Leader 后,
+				// peer 的 `matchLogicIndex` 为 `0`, 但 `nextLogicIndex` 不为 `0` .
+				// `matchLogicIndex < leaderLastIndex` 时,
+				// 仍可能有 `nextLogicIndex == leaderLastIndex`,
+				// 并使得 `AppendEntries` RPC 的 `Entries` 为空.
+
 				peerNextLogicIndex := self.nextLogicIndex[peerId]
 				var arg AppendEntriesArg = AppendEntriesArg{
 					Term:         self.currentTerm,
@@ -717,6 +731,9 @@ func (self *Raft) startBackgroundLogReplicator() {
 					LeaderCommit: self.commitLogicIndex,
 				}
 				self.mu.Unlock()
+
+				// **IMPORTANT**
+				// `Entries` 可能是空的.
 
 				// 发送 `AppendEntries` RPC 并 **同步** 等待 Reply.
 				// 根据 Reply 进行快速回退, 更新 `nextIndex` 并重试.
@@ -754,6 +771,7 @@ func (self *Raft) startBackgroundLogReplicator() {
 						// 此处为了简单, Leader 仅对此 peer 回退到 `PrevLogTerm` 的第一个 Log Index.
 						// self.nextLogicIndex[peerId] = self.termLogStartLogicIndex[arg.PrevLogTerm]
 
+						// 修改:
 						// 按标准方法回退到 `ConflictTerm` 的最后一个 Log Index + 1.
 						// `newNextLogicIndex` 初始化为 `reply.ConflictTermStartLogicIndex`,
 						// 保证至少回退 1.
@@ -773,9 +791,16 @@ func (self *Raft) startBackgroundLogReplicator() {
 					continue
 				}
 
-				self.matchLogicIndex[peerId] = arg.Entries[len(arg.Entries)-1].LogicIndex
-				self.nextLogicIndex[peerId] = arg.Entries[len(arg.Entries)-1].LogicIndex + 1
-				self.needCommit.Signal()
+				lastReplicatedLogicIndex := arg.PrevLogIndex
+				if len(arg.Entries) > 0 {
+					lastReplicatedLogicIndex = arg.Entries[len(arg.Entries)-1].LogicIndex
+				}
+
+				if lastReplicatedLogicIndex > self.matchLogicIndex[peerId] {
+					self.matchLogicIndex[peerId] = lastReplicatedLogicIndex
+					self.nextLogicIndex[peerId] = lastReplicatedLogicIndex + 1
+					self.needCommit.Signal()
+				}
 
 				self.mu.Unlock()
 
