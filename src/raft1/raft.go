@@ -10,11 +10,13 @@ package raft
 import (
 	//	"bytes"
 
+	"bytes"
+	"log"
 	"math/rand"
 	"sync"
 	"time"
 
-	//	"6.5840/labgob"
+	"6.5840/labgob"
 	"6.5840/labrpc"
 	"6.5840/raftapi"
 	tester "6.5840/tester1"
@@ -45,8 +47,8 @@ type Raft struct {
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
-	currentTerm int // init with 0
-	votedFor    int // init with -1
+	currentTerm int // init with 0. Must persist.
+	votedFor    int // init with -1. Must persist.
 	leaderId    int // init with -1
 	state       WorkerState
 
@@ -56,7 +58,7 @@ type Raft struct {
 	lastElectionResetTimepoint time.Time
 	electionTimeoutDuration    time.Duration
 
-	log []LogEntry // `log[0]` is sentinel.
+	log []LogEntry // `log[0]` is sentinel. Must persist.
 
 	commitLogicIndex      int
 	lastAppliedLogicIndex int
@@ -70,7 +72,7 @@ type Raft struct {
 	needReplicate *sync.Cond
 	needCommit    *sync.Cond
 
-	termLogStartLogicIndex map[int]int
+	termLogStartLogicIndex map[int]int // 需要恢复 persistent 数据后基于 `log` 重新计算.
 }
 
 // ================================================================================
@@ -194,6 +196,7 @@ func (self *Raft) AppendEntries(arg *AppendEntriesArg, reply *AppendEntriesReply
 	// General term check.
 	if arg.Term > self.currentTerm {
 		self.updateTermUnsafe(arg.Term)
+		self.persistUnsafe()
 		self.transToBeFollowerUnsafe()
 	}
 
@@ -273,6 +276,7 @@ func (self *Raft) AppendEntries(arg *AppendEntriesArg, reply *AppendEntriesReply
 				self.termLogStartLogicIndex[newEntry.Term] = newEntry.LogicIndex
 			}
 		}
+		self.persistUnsafe()
 
 	}
 
@@ -310,35 +314,56 @@ func (self *Raft) GetState() (int, bool) {
 // second argument to persister.Save().
 // after you've implemented snapshots, pass the current snapshot
 // (or nil if there's not yet a snapshot).
-func (self *Raft) persist() {
-	// Your code here (3C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// raftstate := w.Bytes()
-	// rf.persister.Save(raftstate, nil)
+func (self *Raft) persistUnsafe() {
+	var buf bytes.Buffer
+	encoder := labgob.NewEncoder(&buf)
+	if err := encoder.Encode(self.currentTerm); err != nil {
+		log.Fatalf("failed to encode: %v\n", err)
+	}
+	if err := encoder.Encode(self.votedFor); err != nil {
+		log.Fatalf("failed to encode: %v\n", err)
+	}
+	if err := encoder.Encode(self.log); err != nil {
+		log.Fatalf("failed to encode: %v\n", err)
+	}
+
+	self.persister.Save(buf.Bytes(), nil)
 }
 
 // restore previously persisted state.
-func (self *Raft) readPersist(data []byte) {
-	if data == nil || len(data) < 1 { // bootstrap without any state?
+func (self *Raft) readPersistUnsafe(data []byte) {
+	if len(data) < 1 { // bootstrap without any state?
+		log.Printf("`readPersistUnsafe` received empty persistent data.\n")
 		return
 	}
-	// Your code here (3C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
+
+	buf := bytes.NewBuffer(data)
+	decoder := labgob.NewDecoder(buf)
+
+	var currentTerm int
+	var votedFor int
+	var entries []LogEntry
+
+	if err := decoder.Decode(&currentTerm); err != nil {
+		log.Fatalf("failed to decode: %v\n", err)
+	}
+	if err := decoder.Decode(&votedFor); err != nil {
+		log.Fatalf("failed to decode: %v\n", err)
+	}
+	if err := decoder.Decode(&entries); err != nil {
+		log.Fatalf("failed to decode: %v\n", err)
+	}
+
+	self.currentTerm = currentTerm
+	self.votedFor = votedFor
+	self.log = entries
+
+	self.termLogStartLogicIndex = make(map[int]int)
+	for _, entry := range self.log {
+		if _, exists := self.termLogStartLogicIndex[entry.Term]; !exists {
+			self.termLogStartLogicIndex[entry.Term] = entry.LogicIndex
+		}
+	}
 }
 
 // how many bytes in Raft's persisted log?
@@ -384,6 +409,7 @@ func (self *Raft) RequestVote(arg *RequestVoteArg, reply *RequestVoteReply) {
 	// General term check.
 	if arg.Term > self.currentTerm {
 		self.updateTermUnsafe(arg.Term)
+		self.persistUnsafe()
 		self.transToBeFollowerUnsafe()
 	}
 
@@ -411,6 +437,7 @@ func (self *Raft) RequestVote(arg *RequestVoteArg, reply *RequestVoteReply) {
 	self.resetElectionTimerUnsafe()
 	reply.VoteGranted = true
 	self.votedFor = arg.CandidateId
+	self.persistUnsafe()
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -478,6 +505,7 @@ func (self *Raft) Start(command any) (int, int, bool) {
 	if _, ok := self.termLogStartLogicIndex[entryTerm]; ok == false {
 		self.termLogStartLogicIndex[entryTerm] = entryLogicIndex
 	}
+	self.persistUnsafe()
 
 	// 对于单节点的情况,
 	// 此时应该 Signal `needCommit` .
@@ -522,6 +550,7 @@ func (self *Raft) startBackgroundHeartbeat() {
 					self.mu.Lock()
 					if reply.Term > self.currentTerm {
 						self.updateTermUnsafe(reply.Term)
+						self.persistUnsafe()
 						self.transToBeFollowerUnsafe()
 						self.resetElectionTimerUnsafe()
 					}
@@ -567,6 +596,7 @@ func (self *Raft) startBackgroundElectionTimer() {
 				LastLogTerm:  self.log[len(self.log)-1].Term,
 			}
 			self.votedFor = self.me
+			self.persistUnsafe()
 			self.mu.Unlock()
 
 			go func() {
@@ -600,6 +630,7 @@ func (self *Raft) startBackgroundElectionTimer() {
 							self.mu.Lock()
 							if reply.Term > self.currentTerm {
 								self.updateTermUnsafe(reply.Term)
+								self.persistUnsafe()
 								self.transToBeFollowerUnsafe()
 								self.resetElectionTimerUnsafe()
 								self.mu.Unlock()
@@ -747,6 +778,7 @@ func (self *Raft) startBackgroundLogReplicator() {
 				self.mu.Lock()
 				if reply.Term > self.currentTerm {
 					self.updateTermUnsafe(reply.Term)
+					self.persistUnsafe()
 					self.transToBeFollowerUnsafe()
 					self.resetElectionTimerUnsafe()
 					self.mu.Unlock()
@@ -863,7 +895,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	self.termLogStartLogicIndex[0] = 0
 
 	// initialize from state persisted before a crash
-	self.readPersist(persister.ReadRaftState())
+	self.readPersistUnsafe(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
 
