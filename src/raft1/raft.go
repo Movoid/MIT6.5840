@@ -60,6 +60,7 @@ type Raft struct {
 
 	log []LogEntry // `log[0]` is sentinel. Must persist.
 
+	// 需要恢复 persistent 数据后基于 `log` 重新计算.
 	commitLogicIndex      int
 	lastAppliedLogicIndex int
 
@@ -72,7 +73,15 @@ type Raft struct {
 	needReplicate *sync.Cond
 	needCommit    *sync.Cond
 
-	termLogStartLogicIndex map[int]int // 需要恢复 persistent 数据后基于 `log` 重新计算.
+	// 需要恢复 persistent 数据后基于 `log` 重新计算.
+	// 在有 Snapshot 的情况下,
+	// 若 Term 在 `log` 中没有对应 Log Entry,
+	// 则 Start Logic Index 为 `nil`.
+	termLogStartLogicIndex map[int]int
+
+	// `lastIncludedLogicIndex` 和 `lastIncludedTerm` 由 `log[0]` 维护.
+	snapshot        []byte
+	pendingSnapshot *raftapi.ApplyMsg
 }
 
 // ================================================================================
@@ -327,13 +336,13 @@ func (self *Raft) persistUnsafe() {
 		log.Fatalf("failed to encode: %v\n", err)
 	}
 
-	self.persister.Save(buf.Bytes(), nil)
+	self.persister.Save(buf.Bytes(), self.snapshot)
 }
 
 // restore previously persisted state.
 func (self *Raft) readPersistUnsafe(data []byte) {
 	if len(data) < 1 { // bootstrap without any state?
-		log.Printf("`readPersistUnsafe` received empty persistent data.\n")
+		log.Printf("`Raft.readPersistUnsafe` received empty persistent data.\n")
 		return
 	}
 
@@ -364,6 +373,11 @@ func (self *Raft) readPersistUnsafe(data []byte) {
 			self.termLogStartLogicIndex[entry.Term] = entry.LogicIndex
 		}
 	}
+
+	// The service restores its state from the snapshot independently. Raft only
+	// needs to resume applying entries after the snapshot boundary.
+	self.commitLogicIndex = self.log[0].LogicIndex
+	self.lastAppliedLogicIndex = self.log[0].LogicIndex
 }
 
 // how many bytes in Raft's persisted log?
@@ -376,9 +390,56 @@ func (self *Raft) PersistBytes() int {
 // the service says it has created a snapshot that has
 // all info up to and including index. this means the
 // service no longer needs the log through (and including)
-// that index. Raft should now trim its log as much as possible.
-func (self *Raft) Snapshot(index int, snapshot []byte) {
-	// Your code here (3D).
+// that index. Raft should now **trim its log** as much as possible.
+func (self *Raft) Snapshot(includedLogicIndex int, snapshot []byte) {
+	// Raft 层仅用于达成共识, 不需要知道共识的内容.
+	// Snapshot 作为业务状态机的状态快照, 来自上游传递.
+
+	// 创建 Snapshot 并压缩日志.
+
+	self.mu.Lock()
+	defer self.mu.Unlock()
+
+	if includedLogicIndex < self.log[0].LogicIndex {
+		log.Printf("`Raft.Snapshot` received invalid last included index: %v\n", includedLogicIndex)
+		return
+	}
+
+	if includedLogicIndex == self.log[0].LogicIndex {
+		log.Printf("`Raft.Snapshot` received unchanged last included index, ignored: %v\n", includedLogicIndex)
+		return
+	}
+
+	// Extra check for debug.
+	// Snapshot should not cover uncommitted log entries.
+
+	if includedLogicIndex > self.commitLogicIndex {
+		log.Fatalf("`Raft.Snapshot` received invalid last included index, which covered uncommitted log entries: %v\n", includedLogicIndex)
+	}
+
+	includedPhysicalIndex := self.physicalIndexUnsafe(includedLogicIndex)
+	includedTerm := self.log[includedPhysicalIndex].Term
+
+	// Allocate a new backing array so the discarded commands can be reclaimed.
+	compactedLog := make([]LogEntry, 1, len(self.log)-includedPhysicalIndex)
+	compactedLog[0] = LogEntry{
+		Term:       includedTerm,
+		LogicIndex: includedLogicIndex,
+	}
+	compactedLog = append(compactedLog, self.log[includedPhysicalIndex+1:]...)
+	self.log = compactedLog
+
+	for term := range self.termLogStartLogicIndex {
+		if term < includedTerm {
+			delete(self.termLogStartLogicIndex, term)
+		}
+	}
+	self.termLogStartLogicIndex[includedTerm] = includedLogicIndex
+
+	self.snapshot = append([]byte(nil), snapshot...)
+
+	self.persistUnsafe()
+
 }
 
 // example RequestVote RPC arguments structure.
@@ -472,6 +533,121 @@ func (self *Raft) sendRequestVote(server int, arg *RequestVoteArg, reply *Reques
 	return ok
 }
 
+// InstallSnapshot RPC
+type InstallSnapshotArg struct {
+	Term                   int
+	LeaderId               int
+	LastIncludedLogicIndex int
+	LastIncludedTerm       int
+	Data                   []byte
+}
+
+type InstallSnapshotReply struct {
+	Term    int
+	Success bool
+}
+
+func (self *Raft) InstallSnapshot(arg *InstallSnapshotArg, reply *InstallSnapshotReply) {
+
+	self.mu.Lock()
+	defer self.mu.Unlock()
+
+	if arg.Term > self.currentTerm {
+		self.updateTermUnsafe(arg.Term)
+		self.persistUnsafe()
+		self.transToBeFollowerUnsafe()
+	}
+
+	// 退让同 Term 的 Leader.
+	// 这应该不会发生.
+	if arg.Term == self.currentTerm && self.state == Candidate {
+		self.transToBeFollowerUnsafe()
+	}
+
+	reply.Term = self.currentTerm
+	if arg.Term < self.currentTerm {
+		reply.Success = false
+		return
+	}
+
+	reply.Success = true
+
+	self.rememberLeaderIdUnsafe(arg.LeaderId)
+	self.resetElectionTimerUnsafe()
+
+	// 尝试实现 Fast-Forward,
+	// 在有足够 Committed Log Entries 时,
+	// Apply Snapshot 覆盖到的 Log Entries.
+
+	// InstallSnapshot RPC 不能做 Apply 操作,
+	// 因为当前所有 Apply 行为都由 `startBackgroundLogApplier` 进行,
+	// 否则会导致乱序 Apply 并导致状态机损坏.
+
+	// 那么只能在遇到可以 Fast-Forward 的情况下,
+	// 直接 ignore snapshot.
+
+	if arg.LastIncludedLogicIndex <= self.commitLogicIndex {
+		return
+	}
+
+	// 安装来自 Caller 的 snapshot.
+	// 需要重置状态机.
+
+	// 需要修改 `log` `termLogStartLogicIndex`
+	// `commitLogicIndex`.
+
+	includedPhysicalIndex := self.physicalIndexUnsafe(arg.LastIncludedLogicIndex)
+
+	appendEntriesCnt := max(0, len(self.log)-includedPhysicalIndex)
+
+	compactedLog := make([]LogEntry, 1, 1+appendEntriesCnt)
+	compactedLog[0] = LogEntry{
+		Term:       arg.LastIncludedTerm,
+		LogicIndex: arg.LastIncludedLogicIndex,
+	}
+
+	// 只有 Callee 后面的 Log Entries 的 Term 匹配时才尝试保留.
+	needAppend := appendEntriesCnt > 0 && arg.LastIncludedTerm == self.log[includedPhysicalIndex].Term
+	if needAppend {
+		compactedLog = append(compactedLog, self.log[includedPhysicalIndex+1:]...)
+
+		for term := range self.termLogStartLogicIndex {
+			if term < arg.LastIncludedTerm {
+				delete(self.termLogStartLogicIndex, term)
+			}
+		}
+		self.termLogStartLogicIndex[arg.LastIncludedTerm] = arg.LastIncludedLogicIndex
+	} else {
+		// 如果 Callee 原 Log 后面的 Entries 因 Term 冲突而被丢弃,
+		// 则 `termLogStartLogicIndex` 需要重建.
+		self.termLogStartLogicIndex = map[int]int{
+			arg.LastIncludedTerm: arg.LastIncludedLogicIndex,
+		}
+	}
+
+	self.log = compactedLog
+
+	self.snapshot = append([]byte(nil), arg.Data...)
+
+	// **IMPORTANT**
+	// 不要在这里修改 `lastAppliedLogicIndex`, 否则造成乱序 Apply.
+	self.commitLogicIndex = arg.LastIncludedLogicIndex
+	self.pendingSnapshot = &raftapi.ApplyMsg{
+		SnapshotValid: true,
+		Snapshot:      append([]byte(nil), self.snapshot...),
+		SnapshotTerm:  arg.LastIncludedTerm,
+		SnapshotIndex: arg.LastIncludedLogicIndex,
+	}
+
+	self.persistUnsafe()
+	self.needApply.Signal()
+}
+
+func (self *Raft) sendInstallSnapshot(server int, arg *InstallSnapshotArg, reply *InstallSnapshotReply) bool {
+	ok := self.peers[server].Call("Raft.InstallSnapshot", arg, reply)
+	return ok
+}
+
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
 // server isn't the leader, returns false. otherwise start the
@@ -532,14 +708,21 @@ func (self *Raft) startBackgroundHeartbeat() {
 				// Heartbeart 不处理 Commit 逻辑.
 				// 永远发送空 `entries` .
 				// 但需要通知 Commit goroutine.
+
+				// 引入 Snapshot 后,
+				// 如果 Leader 压缩日志后, 没有 Follower `nextLogicIndex - 1` 位置的 Log Entry,
+				// 则此处需要处理, 将 `PrevLogIndex` `PrevLogTerm` 改成 Leader Sentinel Log Entry.
+
+				prevLogicIndex := max(self.nextLogicIndex[peerId]-1, self.log[0].LogicIndex)
 				var arg AppendEntriesArg = AppendEntriesArg{
 					Term:         self.currentTerm,
 					LeaderId:     self.me,
-					PrevLogIndex: self.nextLogicIndex[peerId] - 1,
-					PrevLogTerm:  self.log[self.physicalIndexUnsafe(self.nextLogicIndex[peerId]-1)].Term,
+					PrevLogIndex: prevLogicIndex,
+					PrevLogTerm:  self.log[self.physicalIndexUnsafe(prevLogicIndex)].Term,
 					Entries:      []LogEntry(nil),
 					LeaderCommit: self.commitLogicIndex,
 				}
+
 				self.mu.Unlock()
 
 				go func() {
@@ -547,6 +730,7 @@ func (self *Raft) startBackgroundHeartbeat() {
 					if ok := self.sendAppendEntries(peerId, &arg, &reply); ok == false {
 						return
 					}
+					// heartbeat 返回成功还是失败不重要.
 					self.mu.Lock()
 					if reply.Term > self.currentTerm {
 						self.updateTermUnsafe(reply.Term)
@@ -667,22 +851,33 @@ func (self *Raft) startBackgroundElectionTimer() {
 	}()
 }
 
+// 不能乱序 Apply, 否则状态机逻辑错误.
+// 只有 Applier 能修改 `lastAppliedLogicIndex`.
 func (self *Raft) startBackgroundLogApplier() {
 	go func() {
 
 		for {
 			self.mu.Lock()
-			for self.commitLogicIndex <= self.lastAppliedLogicIndex {
+			for self.pendingSnapshot == nil &&
+				self.commitLogicIndex <= self.lastAppliedLogicIndex {
 				self.needApply.Wait()
 			}
 
-			i := self.lastAppliedLogicIndex + 1
-			var applyMsg raftapi.ApplyMsg = raftapi.ApplyMsg{
-				CommandValid: true,
-				Command:      self.log[self.physicalIndexUnsafe(i)].Command,
-				CommandIndex: i,
+			// 有 snapshot 则优先 apply pending snapshot.
+			var applyMsg raftapi.ApplyMsg
+			if self.pendingSnapshot != nil {
+				applyMsg = *self.pendingSnapshot
+				self.pendingSnapshot = nil
+				self.lastAppliedLogicIndex = applyMsg.SnapshotIndex
+			} else {
+				i := self.lastAppliedLogicIndex + 1
+				applyMsg = raftapi.ApplyMsg{
+					CommandValid: true,
+					Command:      self.log[self.physicalIndexUnsafe(i)].Command,
+					CommandIndex: i,
+				}
+				self.lastAppliedLogicIndex = i
 			}
-			self.lastAppliedLogicIndex++
 
 			self.mu.Unlock()
 
@@ -736,10 +931,11 @@ func (self *Raft) startBackgroundLogReplicator() {
 			// 使用同步的 `AppendEntires` RPC .
 
 			for {
+				time.Sleep(time.Duration(100) * time.Millisecond)
 				self.mu.Lock()
 				for {
 					if self.state == Leader &&
-						self.matchLogicIndex[i] < self.log[len(self.log)-1].LogicIndex {
+						self.matchLogicIndex[peerId] < self.log[len(self.log)-1].LogicIndex {
 						break
 					}
 					self.needReplicate.Wait()
@@ -753,6 +949,62 @@ func (self *Raft) startBackgroundLogReplicator() {
 				// 并使得 `AppendEntries` RPC 的 `Entries` 为空.
 
 				peerNextLogicIndex := self.nextLogicIndex[peerId]
+
+				// 如果 Leader 无法提供 Follower 所需的 Log Entries,
+				// 则使用 InstallSnapshot RPC.
+				if peerNextLogicIndex <= self.log[0].LogicIndex {
+
+					var arg InstallSnapshotArg = InstallSnapshotArg{
+						Term:                   self.currentTerm,
+						LeaderId:               self.me,
+						LastIncludedLogicIndex: self.log[0].LogicIndex,
+						LastIncludedTerm:       self.log[0].Term,
+						Data:                   append([]byte(nil), self.snapshot...),
+					}
+
+					self.mu.Unlock()
+
+					go func() {
+						var reply InstallSnapshotReply
+						if ok := self.sendInstallSnapshot(peerId, &arg, &reply); ok == false {
+							return
+						}
+
+						self.mu.Lock()
+						if reply.Term > self.currentTerm {
+							self.updateTermUnsafe(reply.Term)
+							self.persistUnsafe()
+							self.transToBeFollowerUnsafe()
+							self.resetElectionTimerUnsafe()
+							self.mu.Unlock()
+							return
+						}
+
+						// 如果 Leader 发出 InstallSnapshot RPC 后,
+						// Follower 返回更大 Term,
+						// 之后 Leader 又提升到更大 Term,
+						// 此处可能会得到 `reply.Term` 更小的 InstallSnapshot RPC 失败.
+						// 这必须正确处理.
+						if !reply.Success {
+							self.mu.Unlock()
+							return
+						}
+
+						// 检查当前 Worker 是否仍是 Leader.
+						if self.state != Leader || self.currentTerm != arg.Term {
+							self.mu.Unlock()
+							return
+						}
+
+						self.matchLogicIndex[peerId] = max(self.matchLogicIndex[peerId], arg.LastIncludedLogicIndex)
+						self.nextLogicIndex[peerId] = max(self.nextLogicIndex[peerId], arg.LastIncludedLogicIndex+1)
+
+						self.mu.Unlock()
+					}()
+
+					continue
+				}
+
 				var arg AppendEntriesArg = AppendEntriesArg{
 					Term:         self.currentTerm,
 					LeaderId:     self.me,
@@ -769,72 +1021,84 @@ func (self *Raft) startBackgroundLogReplicator() {
 				// 发送 `AppendEntries` RPC 并 **同步** 等待 Reply.
 				// 根据 Reply 进行快速回退, 更新 `nextIndex` 并重试.
 
-				var reply AppendEntriesReply
+				go func() {
+					var reply AppendEntriesReply
+					if ok := self.sendAppendEntries(peerId, &arg, &reply); ok == false {
+						return
+					}
 
-				if ok := self.sendAppendEntries(peerId, &arg, &reply); ok == false {
-					continue
-				}
+					self.mu.Lock()
+					if reply.Term > self.currentTerm {
+						self.updateTermUnsafe(reply.Term)
+						self.persistUnsafe()
+						self.transToBeFollowerUnsafe()
+						self.resetElectionTimerUnsafe()
+						self.mu.Unlock()
+						return
+					}
 
-				self.mu.Lock()
-				if reply.Term > self.currentTerm {
-					self.updateTermUnsafe(reply.Term)
-					self.persistUnsafe()
-					self.transToBeFollowerUnsafe()
-					self.resetElectionTimerUnsafe()
-					self.mu.Unlock()
-					continue
-				}
+					// 检查当前 Worker 是否仍是 Leader.
+					if self.state != Leader || self.currentTerm != arg.Term {
+						self.mu.Unlock()
+						return
+					}
 
-				// 检查当前 Worker 是否仍是 Leader.
-				if self.state != Leader || self.currentTerm != arg.Term {
-					self.mu.Unlock()
-					continue
-				}
+					// **IMPORTANT**
+					// 必须处理乱序 AppendEntries RPC 的问题.
 
-				// 快速回退
-				if !reply.Success {
+					// 快速回退
+					if !reply.Success {
 
-					if reply.ConflictTerm == -1 {
-						self.nextLogicIndex[peerId] = reply.ConflictTermStartLogicIndex
-					} else if _, ok := self.termLogStartLogicIndex[reply.ConflictTerm]; ok == false {
-						self.nextLogicIndex[peerId] = reply.ConflictTermStartLogicIndex
-					} else {
-						// 本来 Leader `nextLogicIndex[peerId]` 应该回退到 `reply.ConflictTerm` 的最后一个 Log Index + 1 的位置,
-						// 此处为了简单, Leader 仅对此 peer 回退到 `PrevLogTerm` 的第一个 Log Index.
-						// self.nextLogicIndex[peerId] = self.termLogStartLogicIndex[arg.PrevLogTerm]
-
-						// 修改:
-						// 按标准方法回退到 `ConflictTerm` 的最后一个 Log Index + 1.
-						// `newNextLogicIndex` 初始化为 `reply.ConflictTermStartLogicIndex`,
-						// 保证至少回退 1.
-						newNextLogicIndex := reply.ConflictTermStartLogicIndex
-
-						for i := len(self.log) - 1; i >= 0; i-- {
-							if self.log[i].Term == reply.ConflictTerm {
-								newNextLogicIndex = self.log[i].LogicIndex + 1
-								break
-							}
+						// 不能在 `nextIndex` 变动后进行快速回退, 这难以推理会发生什么.
+						if self.nextLogicIndex[peerId] != arg.PrevLogIndex+1 {
+							self.mu.Unlock()
+							return
 						}
 
-						self.nextLogicIndex[peerId] = newNextLogicIndex
+						if reply.ConflictTerm == -1 {
+							self.nextLogicIndex[peerId] = reply.ConflictTermStartLogicIndex
+						} else if _, ok := self.termLogStartLogicIndex[reply.ConflictTerm]; ok == false {
+							self.nextLogicIndex[peerId] = reply.ConflictTermStartLogicIndex
+						} else {
+							// 本来 Leader `nextLogicIndex[peerId]` 应该回退到 `reply.ConflictTerm` 的最后一个 Log Index + 1 的位置,
+							// 此处为了简单, Leader 仅对此 peer 回退到 `PrevLogTerm` 的第一个 Log Index.
+							// self.nextLogicIndex[peerId] = self.termLogStartLogicIndex[arg.PrevLogTerm]
+
+							// 修改:
+							// 按标准方法回退到 `ConflictTerm` 的最后一个 Log Index + 1.
+							// `newNextLogicIndex` 初始化为 `reply.ConflictTermStartLogicIndex`,
+							// 保证至少回退 1.
+							newNextLogicIndex := reply.ConflictTermStartLogicIndex
+
+							for i := len(self.log) - 1; i >= 0; i-- {
+								if self.log[i].Term == reply.ConflictTerm {
+									newNextLogicIndex = self.log[i].LogicIndex + 1
+									break
+								}
+							}
+
+							self.nextLogicIndex[peerId] = newNextLogicIndex
+						}
+
+						self.mu.Unlock()
+						return
+					}
+
+					lastReplicatedLogicIndex := arg.PrevLogIndex
+					if len(arg.Entries) > 0 {
+						lastReplicatedLogicIndex = arg.Entries[len(arg.Entries)-1].LogicIndex
+					}
+
+					// 只尝试单调递增 peer `matchLogicIndex`,
+					// 在乱序 AppendEntries 时应该不会出错.
+					if lastReplicatedLogicIndex > self.matchLogicIndex[peerId] {
+						self.matchLogicIndex[peerId] = lastReplicatedLogicIndex
+						self.nextLogicIndex[peerId] = lastReplicatedLogicIndex + 1
+						self.needCommit.Signal()
 					}
 
 					self.mu.Unlock()
-					continue
-				}
-
-				lastReplicatedLogicIndex := arg.PrevLogIndex
-				if len(arg.Entries) > 0 {
-					lastReplicatedLogicIndex = arg.Entries[len(arg.Entries)-1].LogicIndex
-				}
-
-				if lastReplicatedLogicIndex > self.matchLogicIndex[peerId] {
-					self.matchLogicIndex[peerId] = lastReplicatedLogicIndex
-					self.nextLogicIndex[peerId] = lastReplicatedLogicIndex + 1
-					self.needCommit.Signal()
-				}
-
-				self.mu.Unlock()
+				}()
 
 			}
 
@@ -893,6 +1157,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	self.termLogStartLogicIndex = make(map[int]int)
 	self.termLogStartLogicIndex[0] = 0
+
+	self.snapshot = persister.ReadSnapshot()
 
 	// initialize from state persisted before a crash
 	self.readPersistUnsafe(persister.ReadRaftState())
