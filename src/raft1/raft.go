@@ -1049,7 +1049,17 @@ func (self *Raft) startBackgroundLogReplicator() {
 					// 快速回退
 					if !reply.Success {
 
-						// 不能在 `nextIndex` 变动后进行快速回退, 这难以推理会发生什么.
+						// 旧请求失败不能影响新的数据, 否则难以推理会发生什么.
+
+						// 作为 Leader, 如果 `arg.PrevLogIndex <= self.matchLogicIndex[peerId]`,
+						// 则这次失败是旧的, 已经有其他成功 `AppendEntries` 推进了 peer `matchLogicIndex`,
+						// 不应该进行快速回退.
+						if arg.PrevLogIndex <= self.matchLogicIndex[peerId] {
+							self.mu.Unlock()
+							return
+						}
+
+						// 不能在 `nextIndex` 变动后进行快速回退, 否则难以推理会发生什么.
 						if self.nextLogicIndex[peerId] != arg.PrevLogIndex+1 {
 							self.mu.Unlock()
 							return
