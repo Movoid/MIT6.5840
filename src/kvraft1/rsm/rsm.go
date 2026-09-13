@@ -3,6 +3,7 @@ package rsm
 import (
 	"log"
 	"sync"
+	"time"
 
 	"6.5840/kvsrv1/rpc"
 	"6.5840/labrpc"
@@ -150,7 +151,7 @@ func (self *RSM) Submit(req any) (rpc.Err, any) {
 	}
 	self.nextOpId++
 
-	logicIndex, _, isLeader := self.raft.Start(command)
+	opLogicIndex, opTerm, isLeader := self.raft.Start(command)
 	if isLeader == false {
 		self.mu.Unlock()
 		return rpc.ErrWrongLeader, nil
@@ -161,14 +162,46 @@ func (self *RSM) Submit(req any) (rpc.Err, any) {
 
 	callback := make(chan CallbackResult, 1)
 
-	self.callbackOfLogicIndex[logicIndex] = callback
+	self.callbackOfLogicIndex[opLogicIndex] = callback
 
 	self.mu.Unlock()
 
-	callbackResult := <-callback
-	if callbackResult.Id != desiredId {
-		return rpc.ErrWrongLeader, nil
+	// 如果操作没能 apply, 比如当前 Worker 已经不再是 Leader,
+	// 不能只靠一直等待不匹配的 OpId 来报告失败.
+	// 如果集群在此次操作后没有新的操作,
+	// 这会导致永久等待.
+
+	// **IMPORTANT**
+	// `RSM.Submit()` 返回失败不代表操作一定没有 Commit.
+	// Raft Layer 输入 `applyCh` 时没有锁, 这存在一些 Race Window,
+	// 如, Op 被 Commit, 在将 Op 成功输入 `applyCh` 前,
+	// Worker 就改变了 Term 或不再是 Leader.
+
+	for {
+		select {
+		case callbackResult := <-callback:
+			if callbackResult.Id != desiredId {
+				return rpc.ErrWrongLeader, nil
+			}
+			return rpc.OK, callbackResult.OpResult
+
+		default:
+			// 如果 Term 已经改变或已经不是 Leader 则直接返回失败.
+			if term, isLeader := self.raft.GetState(); term != opTerm || isLeader == false {
+
+				// 必须检查是否仍是 `callback`.
+				// 否则可能错误清理了后来的 `RSM.Submit()` 调用注册的 `callback`.
+				self.mu.Lock()
+				if self.callbackOfLogicIndex[opLogicIndex] == callback {
+					delete(self.callbackOfLogicIndex, opLogicIndex)
+				}
+				self.mu.Unlock()
+
+				return rpc.ErrWrongLeader, nil
+			}
+			time.Sleep(time.Duration(100) * time.Millisecond)
+			continue
+		}
 	}
 
-	return rpc.OK, callbackResult.OpResult
 }
