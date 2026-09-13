@@ -8,7 +8,7 @@ import (
 	"6.5840/kvsrv1/rpc"
 	"6.5840/labgob"
 	"6.5840/labrpc"
-	"6.5840/tester1"
+	tester "6.5840/tester1"
 )
 
 type Inc struct {
@@ -29,7 +29,7 @@ type Dec struct {
 
 func NewRSMSrv(tc *tester.TesterClnt, ends []*labrpc.ClientEnd, grp tester.Tgid, srv int, persister *tester.Persister) []any {
 	s := newRSMSrv(ends, srv, persister, tester.MaxRaftState)
-	return []any{s.rsm.rf, s}
+	return []any{s.rsm.raft, s}
 }
 
 type rsmSrv struct {
