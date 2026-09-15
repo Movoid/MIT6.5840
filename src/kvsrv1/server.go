@@ -6,7 +6,7 @@ import (
 
 	"6.5840/kvsrv1/rpc"
 	"6.5840/labrpc"
-	"6.5840/tester1"
+	tester "6.5840/tester1"
 )
 
 const Debug = false
@@ -20,16 +20,16 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 
 type KVServer struct {
 	mu   sync.Mutex
-	data map[string]entry
+	data map[string]Entry
 }
 
-type entry struct {
+type Entry struct {
 	value       string
 	nextVersion rpc.Tversion
 }
 
 func MakeKVServer() *KVServer {
-	return &KVServer{data: make(map[string]entry)}
+	return &KVServer{data: make(map[string]Entry)}
 }
 
 // Get returns the value and version for args.Key, if args.Key
@@ -63,7 +63,7 @@ func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 			reply.Err = rpc.ErrNoKey
 			return
 		}
-		kv.data[args.Key] = entry{value: args.Value, nextVersion: 1}
+		kv.data[args.Key] = Entry{value: args.Value, nextVersion: 1}
 		reply.Err = rpc.OK
 		return
 	}

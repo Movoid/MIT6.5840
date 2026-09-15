@@ -177,6 +177,11 @@ func (self *RSM) Submit(req any) (rpc.Err, any) {
 	// 如, Op 被 Commit, 在将 Op 成功输入 `applyCh` 前,
 	// Worker 就改变了 Term 或不再是 Leader.
 
+	// 对操作只执行一次的保证, 需要在 `StateMachine.DoOp()` 中实现.
+
+	ticker := time.NewTicker(time.Duration(100) * time.Millisecond)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case callbackResult := <-callback:
@@ -185,7 +190,7 @@ func (self *RSM) Submit(req any) (rpc.Err, any) {
 			}
 			return rpc.OK, callbackResult.OpResult
 
-		default:
+		case <-ticker.C:
 			// 如果 Term 已经改变或已经不是 Leader 则直接返回失败.
 			if term, isLeader := self.raft.GetState(); term != opTerm || isLeader == false {
 
@@ -199,8 +204,7 @@ func (self *RSM) Submit(req any) (rpc.Err, any) {
 
 				return rpc.ErrWrongLeader, nil
 			}
-			time.Sleep(time.Duration(100) * time.Millisecond)
-			continue
+			// time.Sleep(time.Duration(100) * time.Millisecond)
 		}
 	}
 
