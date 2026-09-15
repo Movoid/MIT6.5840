@@ -928,10 +928,33 @@ func (self *Raft) startBackgroundLogReplicator() {
 
 		go func(peerId int) {
 			// 对 Peer 的 Replicator,
-			// 使用同步的 `AppendEntires` RPC .
+			// 使用异步的 `AppendEntires` RPC .
+
+			ticker := time.NewTicker(time.Duration(100) * time.Millisecond)
+			defer ticker.Stop()
+
+			replicateAvailableCh := make(chan struct{}, 1)
+
+			notifyReplicateAvailable := func() {
+				select {
+				case replicateAvailableCh <- struct{}{}:
+				default:
+				}
+			}
+
+			notifyReplicateAvailable()
+
+			waitReplicateAvailable := func() {
+				select {
+				case <-replicateAvailableCh:
+				case <-ticker.C:
+				}
+			}
 
 			for {
-				time.Sleep(time.Duration(100) * time.Millisecond)
+
+				waitReplicateAvailable()
+
 				self.mu.Lock()
 				for {
 					if self.state == Leader &&
@@ -964,11 +987,14 @@ func (self *Raft) startBackgroundLogReplicator() {
 
 					self.mu.Unlock()
 
+					ticker.Reset(time.Duration(100) * time.Millisecond)
 					go func() {
 						var reply InstallSnapshotReply
 						if ok := self.sendInstallSnapshot(peerId, &arg, &reply); ok == false {
 							return
 						}
+
+						defer notifyReplicateAvailable()
 
 						self.mu.Lock()
 						if reply.Term > self.currentTerm {
@@ -1018,14 +1044,20 @@ func (self *Raft) startBackgroundLogReplicator() {
 				// **IMPORTANT**
 				// `Entries` 可能是空的.
 
-				// 发送 `AppendEntries` RPC 并 **同步** 等待 Reply.
+				// 发送 `AppendEntries` RPC 并 *异步** 等待 Reply.
 				// 根据 Reply 进行快速回退, 更新 `nextIndex` 并重试.
 
+				// 以前的实现是同步, 结果导致失败的操作阻塞后续本来能成功的操作.
+				// 还是改成使用异步.
+
+				ticker.Reset(time.Duration(100) * time.Millisecond)
 				go func() {
 					var reply AppendEntriesReply
 					if ok := self.sendAppendEntries(peerId, &arg, &reply); ok == false {
 						return
 					}
+
+					defer notifyReplicateAvailable()
 
 					self.mu.Lock()
 					if reply.Term > self.currentTerm {
