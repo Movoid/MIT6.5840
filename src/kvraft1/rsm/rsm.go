@@ -26,6 +26,7 @@ type Op struct {
 }
 
 type CallbackResult struct {
+	Err      rpc.Err
 	Id       UniqueOpId
 	OpResult any
 }
@@ -43,12 +44,12 @@ type StateMachine interface {
 }
 
 type RSM struct {
-	mu           sync.Mutex
-	rsmId        int
-	raft         raftapi.Raft
-	applyCh      chan raftapi.ApplyMsg
-	maxraftstate int // snapshot if log grows this big
-	sm           StateMachine
+	mu                             sync.Mutex
+	rsmId                          int
+	raft                           raftapi.Raft
+	applyCh                        chan raftapi.ApplyMsg
+	maxRaftPersistentByteThreshold int // snapshot if log grows this big
+	sm                             StateMachine
 
 	// Your definitions here.
 	nextOpId             int
@@ -76,14 +77,28 @@ func (self *RSM) startBackgroundRsmOpApplier() {
 				// 则当前 Worker 没有注册 callback.
 				callback := self.callbackOfLogicIndex[applyMsg.CommandIndex]
 				if callback != nil {
-					callback <- CallbackResult{Id: op.Id, OpResult: opResult}
+					callback <- CallbackResult{Err: rpc.OK, Id: op.Id, OpResult: opResult}
 					delete(self.callbackOfLogicIndex, applyMsg.CommandIndex)
+				}
+
+				// 通过 `self.maxRaftPersistentByteThreshold` 控制自动 Snapshot.
+				if self.maxRaftPersistentByteThreshold != -1 && self.raft.PersistBytes() >= self.maxRaftPersistentByteThreshold {
+					self.raft.Snapshot(applyMsg.CommandIndex, self.sm.Snapshot())
 				}
 
 				self.mu.Unlock()
 
 			} else if applyMsg.SnapshotValid {
-				log.Panicf("not implemented.\n")
+				self.mu.Lock()
+				self.sm.Restore(applyMsg.Snapshot)
+				// A snapshot cannot recover the individual results of pending calls.
+				for index, callback := range self.callbackOfLogicIndex {
+					if index <= applyMsg.SnapshotIndex {
+						callback <- CallbackResult{Err: rpc.ErrWrongLeader}
+						delete(self.callbackOfLogicIndex, index)
+					}
+				}
+				self.mu.Unlock()
 			} else {
 				log.Fatalf("RsmOpApplier goroutine received unknown applyMsg: %v\n", applyMsg)
 			}
@@ -113,12 +128,16 @@ func (self *RSM) startBackgroundRsmOpApplier() {
 // any long-running work.
 func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, maxraftstate int, sm StateMachine) *RSM {
 	rsm := &RSM{
-		rsmId:                me,
-		maxraftstate:         maxraftstate,
-		applyCh:              make(chan raftapi.ApplyMsg),
-		sm:                   sm,
-		nextOpId:             0,
-		callbackOfLogicIndex: make(map[int](chan CallbackResult)),
+		rsmId:                          me,
+		maxRaftPersistentByteThreshold: maxraftstate,
+		applyCh:                        make(chan raftapi.ApplyMsg),
+		sm:                             sm,
+		nextOpId:                       0,
+		callbackOfLogicIndex:           make(map[int](chan CallbackResult)),
+	}
+	// Restore before starting Raft or the reader, so replay cannot overtake it.
+	if snapshot := persister.ReadSnapshot(); len(snapshot) > 0 {
+		sm.Restore(snapshot)
 	}
 	if !tester.UseRaftStateMachine {
 		rsm.raft = raft.Make(servers, me, persister, rsm.applyCh)
@@ -185,7 +204,7 @@ func (self *RSM) Submit(req any) (rpc.Err, any) {
 	for {
 		select {
 		case callbackResult := <-callback:
-			if callbackResult.Id != desiredId {
+			if callbackResult.Err != rpc.OK || callbackResult.Id != desiredId {
 				return rpc.ErrWrongLeader, nil
 			}
 			return rpc.OK, callbackResult.OpResult

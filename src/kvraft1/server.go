@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"bytes"
 	"log"
 
 	"6.5840/kvraft1/rsm"
@@ -11,8 +12,8 @@ import (
 )
 
 type Entry struct {
-	value       string
-	nextVersion rpc.Tversion
+	Value       string
+	NextVersion rpc.Tversion
 }
 
 type KVServer struct {
@@ -43,7 +44,7 @@ func (self *KVServer) DoOp(req any) any {
 		if !ok {
 			return rpc.GetReply{Err: rpc.ErrNoKey}
 		}
-		return rpc.GetReply{Value: entry.value, Version: entry.nextVersion, Err: rpc.OK}
+		return rpc.GetReply{Value: entry.Value, Version: entry.NextVersion, Err: rpc.OK}
 
 	case rpc.PutArgs:
 		entry, ok := self.data[args.Key]
@@ -51,11 +52,11 @@ func (self *KVServer) DoOp(req any) any {
 			if args.Version != 0 {
 				return rpc.PutReply{Err: rpc.ErrNoKey}
 			}
-		} else if entry.nextVersion != args.Version {
+		} else if entry.NextVersion != args.Version {
 			return rpc.PutReply{Err: rpc.ErrVersion}
 		}
 
-		self.data[args.Key] = Entry{value: args.Value, nextVersion: entry.nextVersion + 1}
+		self.data[args.Key] = Entry{Value: args.Value, NextVersion: entry.NextVersion + 1}
 		return rpc.PutReply{Err: rpc.OK}
 
 	default:
@@ -65,12 +66,26 @@ func (self *KVServer) DoOp(req any) any {
 }
 
 func (self *KVServer) Snapshot() []byte {
-	// Your code here
-	return nil
+	// RSM serializes Snapshot, Restore, and DoOp in its reader.
+	var buf bytes.Buffer
+	if err := labgob.NewEncoder(&buf).Encode(self.data); err != nil {
+		log.Fatalf("KVServer.Snapshot: encode failed: %v", err)
+	}
+	return buf.Bytes()
 }
 
 func (self *KVServer) Restore(data []byte) {
-	// Your code here
+	if len(data) == 0 {
+		return
+	}
+	var restored map[string]Entry
+	if err := labgob.NewDecoder(bytes.NewReader(data)).Decode(&restored); err != nil {
+		log.Fatalf("KVServer.Restore: decode failed: %v", err)
+	}
+	if restored == nil {
+		restored = make(map[string]Entry)
+	}
+	self.data = restored
 }
 
 func (self *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
