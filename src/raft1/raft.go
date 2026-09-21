@@ -295,9 +295,24 @@ func (self *Raft) AppendEntries(arg *AppendEntriesArg, reply *AppendEntriesReply
 	}
 
 	// **IMPORTANT**
-	// 必须使用 `AppendEntries` 涉及的最后一个 Log Entry .
-	if arg.LeaderCommit > self.commitLogicIndex {
-		self.commitLogicIndex = min(arg.LeaderCommit, lastMatchLogicIndex)
+	// 必须使用 `AppendEntries` 涉及的最后一个 Log Entry,
+	// 而不是 Follower Log 中的最后一个 Log Entry.
+
+	// **NOTE**
+	// 这是 Legacy 错误实现, `lastMatchLogicIndex` 可能比 `self.commitLogicIndex` 更小,
+	// 导致 `self.commitLogicIndex` 倒退.
+	// if arg.LeaderCommit > self.commitLogicIndex {
+	// 	self.commitLogicIndex = min(arg.LeaderCommit, lastMatchLogicIndex)
+	// 	self.needApply.Signal()
+	// }
+
+	// 不能让 `self.commitLogicIndex` 倒退,
+	// 否则触发自动 Snapshot 时, 状态机已经 Apply 了 `self.commitLogicIndex` 之后的 Log Entries,
+	// 导致被判定为对没有 Commit 的 Log Entries 进行 Snapshot 而 Fatal Err.
+	// 参考 `covered uncommitted log entries` 报错.
+	newCommitLogicIndex := min(arg.LeaderCommit, lastMatchLogicIndex)
+	if newCommitLogicIndex > self.commitLogicIndex {
+		self.commitLogicIndex = newCommitLogicIndex
 		self.needApply.Signal()
 	}
 
