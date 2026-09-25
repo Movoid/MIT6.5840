@@ -16,7 +16,7 @@ type Server struct {
 	dc       *DaemonClnt
 }
 
-func makeServer(net *labrpc.Network, gid Tgid, nsrv int) *Server {
+func makeServer(net *labrpc.Network, gid ShardGroupId, nsrv int) *Server {
 	srv := &Server{net: net}
 	srv.endNames = make([]string, nsrv)
 	srv.clntEnds = make([]*labrpc.ClientEnd, nsrv)
@@ -30,7 +30,7 @@ func makeServer(net *labrpc.Network, gid Tgid, nsrv int) *Server {
 }
 
 // If restart servers, first call ShutdownServer
-func (s *Server) startServer(gid Tgid) *Server {
+func (s *Server) startServer(gid ShardGroupId) *Server {
 	srv := makeServer(s.net, gid, len(s.endNames))
 	if s.saved == nil {
 		srv.saved = MakePersister()

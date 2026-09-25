@@ -9,18 +9,18 @@ import (
 	"testing"
 	"time"
 
-	"6.5840/kvsrv1"
+	kvsrv "6.5840/kvsrv1"
 	"6.5840/kvsrv1/rpc"
-	"6.5840/kvtest1"
+	kvtest "6.5840/kvtest1"
 	"6.5840/shardkv1/shardcfg"
 	"6.5840/shardkv1/shardctrler"
-	"6.5840/tester1"
+	tester "6.5840/tester1"
 )
 
 const (
-	Controler     = tester.Tgid(0) // controler uses group 0 for a kvraft group
-	NSRV          = 3              // servers per group
-	INTERGRPDELAY = 200            // time in ms between group changes
+	Controler     = tester.ShardGroupId(0) // controler uses group 0 for a kvraft group
+	NSRV          = 3                      // servers per group
+	INTERGRPDELAY = 200                    // time in ms between group changes
 )
 
 type Test struct {
@@ -34,7 +34,7 @@ type Test struct {
 	maxraftstate int
 
 	mu   sync.Mutex
-	ngid tester.Tgid
+	ngid tester.ShardGroupId
 }
 
 // Setup kvserver for the shard controller and make the controller
@@ -92,7 +92,7 @@ func (ts *Test) makeKVClerk() *kvsrv.Clerk {
 	return kvsrv.MakeClerk(clnt, srv).(*kvsrv.Clerk)
 }
 
-func (ts *Test) newGid() tester.Tgid {
+func (ts *Test) newGid() tester.ShardGroupId {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 
@@ -101,8 +101,8 @@ func (ts *Test) newGid() tester.Tgid {
 	return gid
 }
 
-func (ts *Test) groups(n int) []tester.Tgid {
-	grps := make([]tester.Tgid, n)
+func (ts *Test) groups(n int) []tester.ShardGroupId {
+	grps := make([]tester.ShardGroupId, n)
 	for i := 0; i < n; i++ {
 		grps[i] = ts.newGid()
 	}
@@ -111,34 +111,34 @@ func (ts *Test) groups(n int) []tester.Tgid {
 
 // Set up KVService with one group Gid1. Gid1 should initialize itself to
 // own all shards.
-func (ts *Test) setupKVService() tester.Tgid {
+func (ts *Test) setupKVService() tester.ShardGroupId {
 	ts.sck = ts.makeShardCtrler()
 	scfg := shardcfg.MakeShardConfig()
 	args := []string{fmt.Sprintf("--max-raft-state=%d", ts.maxraftstate)}
 	ts.Config.MakeGroupStart("shardgrp1d", args, shardcfg.Gid1, NSRV)
-	scfg.JoinBalance(map[tester.Tgid][]string{shardcfg.Gid1: ts.Group(shardcfg.Gid1).SrvNames()})
+	scfg.JoinBalance(map[tester.ShardGroupId][]string{shardcfg.Gid1: ts.Group(shardcfg.Gid1).SrvNames()})
 	ts.sck.InitConfig(scfg)
 	return shardcfg.Gid1
 }
 
-func (ts *Test) checkMember(sck *shardctrler.ShardCtrler, gid tester.Tgid) bool {
+func (ts *Test) checkMember(sck *shardctrler.ShardCtrler, gid tester.ShardGroupId) bool {
 	cfg := sck.Query()
 	ok := cfg.IsMember(gid)
 	return ok
 }
 
 // Add group gid
-func (ts *Test) join(sck *shardctrler.ShardCtrler, gid tester.Tgid, srvs []string) {
+func (ts *Test) join(sck *shardctrler.ShardCtrler, gid tester.ShardGroupId, srvs []string) {
 	cfg := sck.Query()
 	newcfg := cfg.Copy()
-	ok := newcfg.JoinBalance(map[tester.Tgid][]string{gid: srvs})
+	ok := newcfg.JoinBalance(map[tester.ShardGroupId][]string{gid: srvs})
 	if !ok {
 		log.Fatalf("join: group %d is already present", gid)
 	}
 	sck.ChangeConfigTo(newcfg)
 }
 
-func (ts *Test) joinGroups(sck *shardctrler.ShardCtrler, gids []tester.Tgid) bool {
+func (ts *Test) joinGroups(sck *shardctrler.ShardCtrler, gids []tester.ShardGroupId) bool {
 	for _, gid := range gids {
 		args := []string{fmt.Sprintf("--max-raft-state=%d", ts.maxraftstate)}
 		ts.Config.MakeGroupStart("shardgrp1d", args, gid, NSRV)
@@ -152,17 +152,17 @@ func (ts *Test) joinGroups(sck *shardctrler.ShardCtrler, gids []tester.Tgid) boo
 }
 
 // Group gid leaves.
-func (ts *Test) leave(sck *shardctrler.ShardCtrler, gid tester.Tgid) {
+func (ts *Test) leave(sck *shardctrler.ShardCtrler, gid tester.ShardGroupId) {
 	cfg := sck.Query()
 	newcfg := cfg.Copy()
-	ok := newcfg.LeaveBalance([]tester.Tgid{gid})
+	ok := newcfg.LeaveBalance([]tester.ShardGroupId{gid})
 	if !ok {
 		log.Fatalf("leave: group %d is already not present", gid)
 	}
 	sck.ChangeConfigTo(newcfg)
 }
 
-func (ts *Test) leaveGroups(sck *shardctrler.ShardCtrler, gids []tester.Tgid) bool {
+func (ts *Test) leaveGroups(sck *shardctrler.ShardCtrler, gids []tester.ShardGroupId) bool {
 	for _, gid := range gids {
 		ts.leave(sck, gid)
 		if ok := ts.checkMember(sck, gid); ok {
@@ -174,7 +174,7 @@ func (ts *Test) leaveGroups(sck *shardctrler.ShardCtrler, gids []tester.Tgid) bo
 	return true
 }
 
-func (ts *Test) shutdownLeader(ck *kvtest.TestClerk, gid tester.Tgid) int {
+func (ts *Test) shutdownLeader(ck *kvtest.TestClerk, gid tester.ShardGroupId) int {
 	c, ok := ck.IKVClerk.(*Clerk).GetClerk(gid)
 	if !ok {
 		log.Fatalf("shutdownLeader: no shardgrp clerk for %d", gid)
@@ -187,7 +187,7 @@ func (ts *Test) shutdownLeader(ck *kvtest.TestClerk, gid tester.Tgid) int {
 // make sure that the data really is sharded by
 // shutting down one shard and checking that some
 // Get()s don't succeed.
-func (ts *Test) checkShutdownSharding(down tester.Tgid, ka []string, va []string) {
+func (ts *Test) checkShutdownSharding(down tester.ShardGroupId, ka []string, va []string) {
 	const NSEC = 2
 
 	ts.Group(down).Shutdown()
@@ -239,7 +239,7 @@ func (ts *Test) checkShutdownSharding(down tester.Tgid, ka []string, va []string
 // the test shuts down shardgrp `gid`.  After the second controller is
 // done, heal the partition.  partitionCtrler returns if recovery
 // happened.
-func (ts *Test) partitionCtrler(ck kvtest.IKVClerk, gid tester.Tgid, ka, va []string) {
+func (ts *Test) partitionCtrler(ck kvtest.IKVClerk, gid tester.ShardGroupId, ka, va []string) {
 	const (
 		RAND = 400
 		NSEC = 1
@@ -255,15 +255,15 @@ func (ts *Test) partitionCtrler(ck kvtest.IKVClerk, gid tester.Tgid, ka, va []st
 	num := cfg.Num
 
 	state := 0
-	ngid := tester.Tgid(0)
+	ngid := tester.ShardGroupId(0)
 	go func() {
 		for {
 			ngid = ts.newGid()
 			state = JOIN
-			ts.joinGroups(sck, []tester.Tgid{ngid})
+			ts.joinGroups(sck, []tester.ShardGroupId{ngid})
 			if ok := ts.checkMember(sck, ngid); ok {
 				state = LEAVE
-				ts.leaveGroups(sck, []tester.Tgid{ngid})
+				ts.leaveGroups(sck, []tester.ShardGroupId{ngid})
 			} else {
 				//log.Printf("%v: deposed", sck.Id())
 				return
@@ -323,7 +323,7 @@ func (ts *Test) partitionCtrler(ck kvtest.IKVClerk, gid tester.Tgid, ka, va []st
 
 	if state == JOIN && present {
 		// cleanup if disconnected after join but before leave
-		ts.leaveGroups(sck0, []tester.Tgid{ngid})
+		ts.leaveGroups(sck0, []tester.ShardGroupId{ngid})
 	}
 
 	if ts.partition {
@@ -364,10 +364,10 @@ func (ts *Test) concurCtrler(ck kvtest.IKVClerk, ka, va []string) {
 				sck := ts.makeShardCtrler()
 				sck.InitController()
 				//log.Printf("%v: electCtrler %d join/leave %v", sck.Id(), i, ngid)
-				ts.joinGroups(sck, []tester.Tgid{ngid})
+				ts.joinGroups(sck, []tester.ShardGroupId{ngid})
 				if ok := ts.checkMember(sck, ngid); ok {
 					//log.Printf("%v: electCtrler %d leave %d", sck.Id(), i, ngid)
-					if ok := ts.leaveGroups(sck, []tester.Tgid{ngid}); !ok {
+					if ok := ts.leaveGroups(sck, []tester.ShardGroupId{ngid}); !ok {
 						//log.Printf("%v: electCtrler %d leave %v failed", sck.Id(), i, ngid)
 					}
 				} else {

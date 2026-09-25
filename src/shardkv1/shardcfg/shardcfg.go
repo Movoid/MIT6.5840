@@ -8,42 +8,42 @@ import (
 	"slices"
 	"testing"
 
-	"6.5840/tester1"
+	tester "6.5840/tester1"
 )
 
-type Tshid int
-type Tnum int
+type ShardId int
+type ConfigVersion int
 
 const (
 	NShards  = 12 // The number of shards.
-	NumFirst = Tnum(1)
+	NumFirst = ConfigVersion(1)
 )
 
 const (
-	Gid1 = tester.Tgid(1)
+	Gid1 = tester.ShardGroupId(1)
 )
 
 // which shard is a key in?
 // please use this function,
 // and please do not change it.
-func Key2Shard(key string) Tshid {
+func Key2Shard(key string) ShardId {
 	h := fnv.New32a()
 	h.Write([]byte(key))
-	shard := Tshid(Tshid(h.Sum32()) % NShards)
+	shard := ShardId(ShardId(h.Sum32()) % NShards)
 	return shard
 }
 
 // A configuration -- an assignment of shards to groups.
 // Please don't change this.
 type ShardConfig struct {
-	Num    Tnum                     // config number
-	Shards [NShards]tester.Tgid     // shard -> gid
-	Groups map[tester.Tgid][]string // gid -> servers[]
+	Num    ConfigVersion                    // config number
+	Shards [NShards]tester.ShardGroupId     // shard -> gid
+	Groups map[tester.ShardGroupId][]string // gid -> servers[]
 }
 
 func MakeShardConfig() *ShardConfig {
 	c := &ShardConfig{
-		Groups: make(map[tester.Tgid][]string),
+		Groups: make(map[tester.ShardGroupId][]string),
 	}
 	return c
 }
@@ -77,19 +77,19 @@ func (cfg *ShardConfig) Copy() *ShardConfig {
 }
 
 // mostgroup, mostn, leastgroup, leastn
-func analyze(c *ShardConfig) (tester.Tgid, int, tester.Tgid, int) {
-	counts := map[tester.Tgid]int{}
+func analyze(c *ShardConfig) (tester.ShardGroupId, int, tester.ShardGroupId, int) {
+	counts := map[tester.ShardGroupId]int{}
 	for _, g := range c.Shards {
 		counts[g] += 1
 	}
 
 	mn := -1
-	var mg tester.Tgid = -1
+	var mg tester.ShardGroupId = -1
 	ln := 257
-	var lg tester.Tgid = -1
+	var lg tester.ShardGroupId = -1
 	// Enforce deterministic ordering, map iteration
 	// is randomized in go
-	groups := make([]tester.Tgid, len(c.Groups))
+	groups := make([]tester.ShardGroupId, len(c.Groups))
 	i := 0
 	for k := range c.Groups {
 		groups[i] = k
@@ -112,7 +112,7 @@ func analyze(c *ShardConfig) (tester.Tgid, int, tester.Tgid, int) {
 
 // return GID of group with least number of
 // assigned shards.
-func least(c *ShardConfig) tester.Tgid {
+func least(c *ShardConfig) tester.ShardGroupId {
 	_, _, lg, _ := analyze(c)
 	return lg
 }
@@ -153,7 +153,7 @@ func (c *ShardConfig) Rebalance() {
 	}
 }
 
-func (cfg *ShardConfig) Join(servers map[tester.Tgid][]string) bool {
+func (cfg *ShardConfig) Join(servers map[tester.ShardGroupId][]string) bool {
 	changed := false
 	for gid, servers := range servers {
 		_, ok := cfg.Groups[gid]
@@ -182,7 +182,7 @@ func (cfg *ShardConfig) Join(servers map[tester.Tgid][]string) bool {
 	return true
 }
 
-func (cfg *ShardConfig) Leave(gids []tester.Tgid) bool {
+func (cfg *ShardConfig) Leave(gids []tester.ShardGroupId) bool {
 	changed := false
 	for _, gid := range gids {
 		_, ok := cfg.Groups[gid]
@@ -204,7 +204,7 @@ func (cfg *ShardConfig) Leave(gids []tester.Tgid) bool {
 	return true
 }
 
-func (cfg *ShardConfig) JoinBalance(servers map[tester.Tgid][]string) bool {
+func (cfg *ShardConfig) JoinBalance(servers map[tester.ShardGroupId][]string) bool {
 	if !cfg.Join(servers) {
 		return false
 	}
@@ -212,7 +212,7 @@ func (cfg *ShardConfig) JoinBalance(servers map[tester.Tgid][]string) bool {
 	return true
 }
 
-func (cfg *ShardConfig) LeaveBalance(gids []tester.Tgid) bool {
+func (cfg *ShardConfig) LeaveBalance(gids []tester.ShardGroupId) bool {
 	if !cfg.Leave(gids) {
 		return false
 	}
@@ -220,13 +220,13 @@ func (cfg *ShardConfig) LeaveBalance(gids []tester.Tgid) bool {
 	return true
 }
 
-func (cfg *ShardConfig) GidServers(sh Tshid) (tester.Tgid, []string, bool) {
+func (cfg *ShardConfig) GidServers(sh ShardId) (tester.ShardGroupId, []string, bool) {
 	gid := cfg.Shards[sh]
 	srvs, ok := cfg.Groups[gid]
 	return gid, srvs, ok
 }
 
-func (cfg *ShardConfig) IsMember(gid tester.Tgid) bool {
+func (cfg *ShardConfig) IsMember(gid tester.ShardGroupId) bool {
 	for _, g := range cfg.Shards {
 		if g == gid {
 			return true
@@ -235,7 +235,7 @@ func (cfg *ShardConfig) IsMember(gid tester.Tgid) bool {
 	return false
 }
 
-func (cfg *ShardConfig) CheckConfig(t *testing.T, groups []tester.Tgid) {
+func (cfg *ShardConfig) CheckConfig(t *testing.T, groups []tester.ShardGroupId) {
 	if len(cfg.Groups) != len(groups) {
 		fatalf(t, "wanted %v groups, got %v", len(groups), len(cfg.Groups))
 	}
@@ -259,7 +259,7 @@ func (cfg *ShardConfig) CheckConfig(t *testing.T, groups []tester.Tgid) {
 	}
 
 	// more or less balanced sharding?
-	counts := map[tester.Tgid]int{}
+	counts := map[tester.ShardGroupId]int{}
 	for _, g := range cfg.Shards {
 		counts[g] += 1
 	}

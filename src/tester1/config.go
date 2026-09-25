@@ -4,10 +4,12 @@ import (
 	crand "crypto/rand"
 	"encoding/base64"
 	"fmt"
+
 	//"log"
 	"math/big"
 	"math/rand"
 	"runtime"
+
 	// "runtime/debug"
 	"strings"
 	"sync"
@@ -75,7 +77,7 @@ func (cfg *Config) SetLongDelays(longdel bool) {
 	cfg.net.LongDelays(longdel)
 }
 
-func (cfg *Config) Group(gid Tgid) *ServerGrp {
+func (cfg *Config) Group(gid ShardGroupId) *ServerGrp {
 	return cfg.lookupGroup(gid)
 }
 
@@ -99,12 +101,12 @@ func (cfg *Config) Cleanup() {
 	}
 }
 
-func (cfg *Config) MakeGroupStart(prog string, args []string, gid Tgid, nsrv int) {
+func (cfg *Config) MakeGroupStart(prog string, args []string, gid ShardGroupId, nsrv int) {
 	cfg.MakeGroup(prog, args, gid, nsrv)
 	cfg.Group(gid).StartServers()
 }
 
-func (cfg *Config) ExitGroup(gid Tgid) {
+func (cfg *Config) ExitGroup(gid ShardGroupId) {
 	cfg.Group(gid).Shutdown()
 	cfg.Groups.delete(gid)
 }

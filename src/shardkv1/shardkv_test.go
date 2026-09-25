@@ -7,10 +7,10 @@ import (
 	"time"
 
 	"6.5840/kvsrv1/rpc"
-	"6.5840/kvtest1"
+	kvtest "6.5840/kvtest1"
 	"6.5840/shardkv1/shardcfg"
 	"6.5840/shardkv1/shardctrler"
-	"6.5840/tester1"
+	tester "6.5840/tester1"
 )
 
 const (
@@ -35,7 +35,7 @@ func TestInitQuery5A(t *testing.T) {
 
 	// Compute a new shard configuration as if `shardcfg.Gid1` joins  the cluster,
 	// assigning all shards to `shardcfg.Gid1`.
-	scfg.JoinBalance(map[tester.Tgid][]string{shardcfg.Gid1: []string{"xxx"}})
+	scfg.JoinBalance(map[tester.ShardGroupId][]string{shardcfg.Gid1: []string{"xxx"}})
 
 	// Invoke the controller to initialize to store the first configuration
 	sck.InitConfig(scfg)
@@ -45,7 +45,7 @@ func TestInitQuery5A(t *testing.T) {
 	if cfg.Num != 1 || cfg.Shards[0] != shardcfg.Gid1 {
 		ts.t.Fatalf("Static wrong %v", cfg)
 	}
-	cfg.CheckConfig(t, []tester.Tgid{shardcfg.Gid1})
+	cfg.CheckConfig(t, []tester.ShardGroupId{shardcfg.Gid1})
 }
 
 // Test shardkv clerk's Get/Put with 1 shardgrp (without reconfiguration)
@@ -90,7 +90,7 @@ func TestJoinBasic5A(t *testing.T) {
 	cfg := sck.Query()
 
 	gid2 := ts.newGid()
-	if ok := ts.joinGroups(sck, []tester.Tgid{gid2}); !ok {
+	if ok := ts.joinGroups(sck, []tester.ShardGroupId{gid2}); !ok {
 		ts.t.Fatalf("TestJoinBasic5A: joinGroups failed")
 	}
 
@@ -135,7 +135,7 @@ func TestDeleteBasic5A(t *testing.T) {
 
 	sck := ts.ShardCtrler()
 	gid2 := ts.newGid()
-	if ok := ts.joinGroups(sck, []tester.Tgid{gid2}); !ok {
+	if ok := ts.joinGroups(sck, []tester.ShardGroupId{gid2}); !ok {
 		ts.t.Fatalf("TestDeleteBasic5A: joinGroups failed")
 	}
 
@@ -164,7 +164,7 @@ func TestJoinLeaveBasic5A(t *testing.T) {
 
 	sck := ts.ShardCtrler()
 	gid2 := ts.newGid()
-	if ok := ts.joinGroups(sck, []tester.Tgid{gid2}); !ok {
+	if ok := ts.joinGroups(sck, []tester.ShardGroupId{gid2}); !ok {
 		ts.t.Fatalf("TestJoinLeaveBasic5A: joinGroups failed")
 	}
 
@@ -295,7 +295,7 @@ func TestProgressShutdown5A(t *testing.T) {
 		ts.Group(g).Shutdown()
 	}
 
-	alive := make(map[tester.Tgid]bool)
+	alive := make(map[tester.ShardGroupId]bool)
 	for _, g := range grps[end:] {
 		alive[g] = true
 	}
@@ -344,22 +344,22 @@ func TestProgressJoin5A(t *testing.T) {
 
 	cfg := sck.Query()
 	newcfg := cfg.Copy()
-	newgid := tester.Tgid(NJOIN + 3)
-	if ok := newcfg.JoinBalance(map[tester.Tgid][]string{newgid: []string{"xxx"}}); !ok {
+	newgid := tester.ShardGroupId(NJOIN + 3)
+	if ok := newcfg.JoinBalance(map[tester.ShardGroupId][]string{newgid: []string{"xxx"}}); !ok {
 		t.Fatalf("JoinBalance failed")
 	}
 	newcfg1 := newcfg.Copy()
-	if ok := newcfg1.LeaveBalance([]tester.Tgid{newgid}); !ok {
+	if ok := newcfg1.LeaveBalance([]tester.ShardGroupId{newgid}); !ok {
 		t.Fatalf("JoinBalance failed")
 	}
 
 	// compute which shards don't move and which groups are involved
 	// in moving shards
-	stable := make(map[shardcfg.Tshid]bool)
-	participating := make(map[tester.Tgid]bool)
+	stable := make(map[shardcfg.ShardId]bool)
+	participating := make(map[tester.ShardGroupId]bool)
 	for i, g := range newcfg1.Shards {
 		if newcfg.Shards[i] == g {
-			stable[shardcfg.Tshid(i)] = true
+			stable[shardcfg.ShardId(i)] = true
 		} else {
 			participating[g] = true
 		}
@@ -376,10 +376,10 @@ func TestProgressJoin5A(t *testing.T) {
 				return
 			default:
 				//log.Printf("join/leave %v", newgid)
-				if ok := ts.joinGroups(sck, []tester.Tgid{newgid}); !ok {
+				if ok := ts.joinGroups(sck, []tester.ShardGroupId{newgid}); !ok {
 					t.Fatalf("TestProgressJoin: join failed")
 				}
-				if ok := ts.leaveGroups(sck, []tester.Tgid{newgid}); !ok {
+				if ok := ts.leaveGroups(sck, []tester.ShardGroupId{newgid}); !ok {
 					t.Fatalf("TestProgressJoin: leave failed")
 				}
 			}
@@ -500,7 +500,7 @@ func TestJoinLeave5B(t *testing.T) {
 	gid2 := ts.newGid()
 	ch := make(chan bool)
 	go func() {
-		ch <- ts.joinGroups(sck, []tester.Tgid{gid2})
+		ch <- ts.joinGroups(sck, []tester.ShardGroupId{gid2})
 	}()
 
 	select {
@@ -530,7 +530,7 @@ func TestJoinLeave5B(t *testing.T) {
 	ts.Group(gid2).Shutdown()
 
 	go func() {
-		ch <- ts.leaveGroups(sck, []tester.Tgid{shardcfg.Gid1})
+		ch <- ts.leaveGroups(sck, []tester.ShardGroupId{shardcfg.Gid1})
 	}()
 
 	select {
@@ -613,7 +613,7 @@ func TestPartitionControllerJoin5C(t *testing.T) {
 	sck.InitController()
 
 	ch := make(chan rpc.Err)
-	ngid := tester.Tgid(0)
+	ngid := tester.ShardGroupId(0)
 	go func() {
 		ngid = ts.newGid()
 		args := []string{fmt.Sprintf("--max-raft-state=%d", ts.maxraftstate)}

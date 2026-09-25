@@ -1,16 +1,15 @@
 package shardgrp
 
 import (
-
 	"6.5840/kvsrv1/rpc"
 	"6.5840/shardkv1/shardcfg"
-	"6.5840/tester1"
+	tester "6.5840/tester1"
 )
 
 type Clerk struct {
 	*tester.Clnt
 	servers []string
-	leader int // last successful leader (index into servers[])
+	leader  int // last successful leader (index into servers[])
 	// You can  add to this struct.
 }
 
@@ -33,17 +32,17 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 	return ""
 }
 
-func (ck *Clerk) FreezeShard(s shardcfg.Tshid, num shardcfg.Tnum) ([]byte, rpc.Err) {
+func (ck *Clerk) FreezeShard(s shardcfg.ShardId, num shardcfg.ConfigVersion) ([]byte, rpc.Err) {
 	// Your code here
 	return nil, ""
 }
 
-func (ck *Clerk) InstallShard(s shardcfg.Tshid, state []byte, num shardcfg.Tnum) rpc.Err {
+func (ck *Clerk) InstallShard(s shardcfg.ShardId, state []byte, num shardcfg.ConfigVersion) rpc.Err {
 	// Your code here
 	return ""
 }
 
-func (ck *Clerk) DeleteShard(s shardcfg.Tshid, num shardcfg.Tnum) rpc.Err {
+func (ck *Clerk) DeleteShard(s shardcfg.ShardId, num shardcfg.ConfigVersion) rpc.Err {
 	// Your code here
 	return ""
 }

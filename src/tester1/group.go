@@ -8,11 +8,11 @@ import (
 	"6.5840/labrpc"
 )
 
-type Tgid int
+type ShardGroupId int
 
 // Each server has a name: i'th server of group gid. If there is only a single
 // server, it its gid = 0 and its i is 0.
-func ServerName(gid Tgid, i int) string {
+func ServerName(gid ShardGroupId, i int) string {
 	return "server-" + strconv.Itoa(int(gid)) + "-" + strconv.Itoa(i)
 }
 
@@ -24,28 +24,28 @@ type Groups struct {
 	prog    string
 	args    []string
 	endName string
-	grps    map[Tgid]*ServerGrp
+	grps    map[ShardGroupId]*ServerGrp
 }
 
 func newGroups(net *labrpc.Network, prog string, args []string, endName string) *Groups {
-	return &Groups{net: net, prog: prog, args: args, endName: endName, grps: make(map[Tgid]*ServerGrp)}
+	return &Groups{net: net, prog: prog, args: args, endName: endName, grps: make(map[ShardGroupId]*ServerGrp)}
 }
 
-func (gs *Groups) MakeGroup(prog string, args []string, gid Tgid, nsrv int) {
+func (gs *Groups) MakeGroup(prog string, args []string, gid ShardGroupId, nsrv int) {
 	gs.mu.Lock()
 	defer gs.mu.Unlock()
 
 	gs.grps[gid] = makeSrvGrp(gs.net, prog, args, gs.endName, gid, nsrv)
 }
 
-func (gs *Groups) lookupGroup(gid Tgid) *ServerGrp {
+func (gs *Groups) lookupGroup(gid ShardGroupId) *ServerGrp {
 	gs.mu.Lock()
 	defer gs.mu.Unlock()
 
 	return gs.grps[gid]
 }
 
-func (gs *Groups) delete(gid Tgid) {
+func (gs *Groups) delete(gid ShardGroupId) {
 	gs.mu.Lock()
 	defer gs.mu.Unlock()
 
@@ -68,12 +68,12 @@ type ServerGrp struct {
 	srvs        []*Server
 	servernames []string
 	endName     string
-	gid         Tgid
+	gid         ShardGroupId
 	connected   []bool // whether each server is on the net
 	mu          sync.Mutex
 }
 
-func makeSrvGrp(net *labrpc.Network, prog string, args []string, endName string, gid Tgid, n int) *ServerGrp {
+func makeSrvGrp(net *labrpc.Network, prog string, args []string, endName string, gid ShardGroupId, n int) *ServerGrp {
 	sg := &ServerGrp{
 		net:       net,
 		prog:      prog,

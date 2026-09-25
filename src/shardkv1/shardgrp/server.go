@@ -1,34 +1,30 @@
 package shardgrp
 
 import (
-
 	"6.5840/kvraft1/rsm"
 	"6.5840/kvsrv1/rpc"
 	"6.5840/labgob"
 	"6.5840/labrpc"
 	"6.5840/shardkv1/shardgrp/shardrpc"
-	"6.5840/tester1"
+	tester "6.5840/tester1"
 )
 
 const (
 	ENVKEY = "65840ENV"
 )
 
-
 type KVServer struct {
 	me  int
 	rsm *rsm.RSM
-	gid tester.Tgid
+	gid tester.ShardGroupId
 
 	// Your code here
 }
-
 
 func (kv *KVServer) DoOp(req any) any {
 	// Your code here
 	return nil
 }
-
 
 func (kv *KVServer) Snapshot() []byte {
 	// Your code here
@@ -67,7 +63,7 @@ func (kv *KVServer) DeleteShard(args *shardrpc.DeleteShardArgs, reply *shardrpc.
 //
 // StartShardServerGrp() and MakeRSM() must return quickly, so they should
 // start goroutines for any long-running work.
-func StartServerShardGrp(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, persister *tester.Persister, maxraftstate int) []any {
+func StartServerShardGrp(servers []*labrpc.ClientEnd, gid tester.ShardGroupId, me int, persister *tester.Persister, maxraftstate int) []any {
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	labgob.Register(rpc.PutArgs{})
@@ -85,6 +81,6 @@ func StartServerShardGrp(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, p
 	return []any{kv, kv.rsm.Raft()}
 }
 
-func NewServer(tc *tester.TesterClnt, ends []*labrpc.ClientEnd, grp tester.Tgid, srv int, persister *tester.Persister) []any {
+func NewServer(tc *tester.TesterClnt, ends []*labrpc.ClientEnd, grp tester.ShardGroupId, srv int, persister *tester.Persister) []any {
 	return StartServerShardGrp(ends, grp, srv, persister, tester.MaxRaftState)
 }

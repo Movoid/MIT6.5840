@@ -144,7 +144,7 @@ func (self *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 
 // StartKVServer() and MakeRSM() must return quickly, so they should
 // start goroutines for any long-running work.
-func StartKVServer(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, persister *tester.Persister, maxraftstate int) []any {
+func StartKVServer(servers []*labrpc.ClientEnd, gid tester.ShardGroupId, me int, persister *tester.Persister, maxraftstate int) []any {
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	labgob.Register(rsm.Op{})
@@ -158,6 +158,6 @@ func StartKVServer(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, persist
 	return []any{kv, kv.rsm.Raft()}
 }
 
-func NewServer(tc *tester.TesterClnt, ends []*labrpc.ClientEnd, grp tester.Tgid, srv int, persister *tester.Persister) []any {
+func NewServer(tc *tester.TesterClnt, ends []*labrpc.ClientEnd, grp tester.ShardGroupId, srv int, persister *tester.Persister) []any {
 	return StartKVServer(ends, Gid, srv, persister, tester.MaxRaftState)
 }

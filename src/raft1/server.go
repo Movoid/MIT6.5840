@@ -9,8 +9,7 @@ import (
 	"6.5840/labgob"
 	"6.5840/labrpc"
 	"6.5840/raftapi"
-	"6.5840/tester1"
-
+	tester "6.5840/tester1"
 )
 
 const (
@@ -36,7 +35,7 @@ type rfsrv struct {
 	log  map[int]any // for snapshots
 }
 
-func NewRfsrv(tc *tester.TesterClnt, ends []*labrpc.ClientEnd, grp tester.Tgid, srv int, persister *tester.Persister) []any {
+func NewRfsrv(tc *tester.TesterClnt, ends []*labrpc.ClientEnd, grp tester.ShardGroupId, srv int, persister *tester.Persister) []any {
 	// tc is a client to talk to the tester
 	ts := newTesterProxy(tc)
 	s := newRfsrv(ts, ends, grp, srv, persister, tester.MaxRaftState > 0)
@@ -46,7 +45,7 @@ func NewRfsrv(tc *tester.TesterClnt, ends []*labrpc.ClientEnd, grp tester.Tgid, 
 // Each Raft server uses a raft library to Start a command and read
 // committed commands from the library's apply channel.  The server
 // can be run in two configurations: without and without snapshots.
-func newRfsrv(ts Itester, ends []*labrpc.ClientEnd, grp tester.Tgid, srv int, persister *tester.Persister, snapshot bool) *rfsrv {
+func newRfsrv(ts Itester, ends []*labrpc.ClientEnd, grp tester.ShardGroupId, srv int, persister *tester.Persister, snapshot bool) *rfsrv {
 
 	// grab a copy of the initial snapshot, to avoid
 	// a possible race with raft.Make() and the

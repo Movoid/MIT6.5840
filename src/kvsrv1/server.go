@@ -80,7 +80,7 @@ func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 }
 
 // You can ignore all arguments; they are for replicated KVservers
-func StartKVServer(tc *tester.TesterClnt, ends []*labrpc.ClientEnd, gid tester.Tgid, srv int, persister *tester.Persister) []any {
+func StartKVServer(tc *tester.TesterClnt, ends []*labrpc.ClientEnd, gid tester.ShardGroupId, srv int, persister *tester.Persister) []any {
 	kv := MakeKVServer()
 	return []any{kv}
 }

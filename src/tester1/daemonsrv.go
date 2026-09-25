@@ -20,7 +20,7 @@ import (
 
 type DaemonSrv struct {
 	endName   string
-	gid       Tgid
+	gid       ShardGroupId
 	sid       int
 	rpcc      *sockrpc.RPCClnt
 	rpcs      *sockrpc.RPCSrv
@@ -35,7 +35,7 @@ func sockctl(sock string) string {
 }
 
 // Start server and return the services to register with labrpc
-type FstartServer func(tc *TesterClnt, ends []*labrpc.ClientEnd, grp Tgid, srv int, persister *Persister) []any
+type FstartServer func(tc *TesterClnt, ends []*labrpc.ClientEnd, grp ShardGroupId, srv int, persister *Persister) []any
 
 // A server process's main() calls InitDaemon() to initialize
 func InitDaemon(args []string, mks FstartServer) error {
@@ -104,7 +104,7 @@ func InitDaemon(args []string, mks FstartServer) error {
 	// wait until we receive Init RPC with snapshot
 	ds.persister = <-ds.ch
 	ds.rpcs = sockrpc.NewRPCSrv(ds.endName)
-	svcs := mks(newTesterClnt(ds.rpcc), ends, Tgid(gid), sid, ds.persister)
+	svcs := mks(newTesterClnt(ds.rpcc), ends, ShardGroupId(gid), sid, ds.persister)
 	for _, svc := range svcs {
 		ds.rpcs.AddService(svc)
 	}

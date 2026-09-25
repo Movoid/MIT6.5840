@@ -27,7 +27,7 @@ type NullRep struct {
 type Dec struct {
 }
 
-func NewRSMSrv(tc *tester.TesterClnt, ends []*labrpc.ClientEnd, grp tester.Tgid, srv int, persister *tester.Persister) []any {
+func NewRSMSrv(tc *tester.TesterClnt, ends []*labrpc.ClientEnd, grp tester.ShardGroupId, srv int, persister *tester.Persister) []any {
 	s := newRSMSrv(ends, srv, persister, tester.MaxRaftState)
 	return []any{s.rsm.raft, s}
 }

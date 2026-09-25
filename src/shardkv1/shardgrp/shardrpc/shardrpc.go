@@ -6,20 +6,20 @@ import (
 )
 
 type FreezeShardArgs struct {
-	Shard shardcfg.Tshid
-	Num   shardcfg.Tnum
+	Shard shardcfg.ShardId
+	Num   shardcfg.ConfigVersion
 }
 
 type FreezeShardReply struct {
 	State []byte
-	Num   shardcfg.Tnum
+	Num   shardcfg.ConfigVersion
 	Err   rpc.Err
 }
 
 type InstallShardArgs struct {
-	Shard shardcfg.Tshid
+	Shard shardcfg.ShardId
 	State []byte
-	Num   shardcfg.Tnum
+	Num   shardcfg.ConfigVersion
 }
 
 type InstallShardReply struct {
@@ -27,8 +27,8 @@ type InstallShardReply struct {
 }
 
 type DeleteShardArgs struct {
-	Shard shardcfg.Tshid
-	Num   shardcfg.Tnum
+	Shard shardcfg.ShardId
+	Num   shardcfg.ConfigVersion
 }
 
 type DeleteShardReply struct {

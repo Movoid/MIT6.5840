@@ -54,7 +54,7 @@ func options() []string {
 }
 
 // The tester calls RunDaemon to start a server as a process
-func runDaemon(net *labrpc.Network, prog string, pargs []string, endName string, gid Tgid, srv int, endNames []string) (*DaemonClnt, error) {
+func runDaemon(net *labrpc.Network, prog string, pargs []string, endName string, gid ShardGroupId, srv int, endNames []string) (*DaemonClnt, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return nil, err
