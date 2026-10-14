@@ -252,7 +252,7 @@ func (ts *Test) partitionCtrler(ck kvtest.IKVClerk, gid tester.ShardGroupId, ka,
 	sck.InitController()
 
 	cfg := ts.ShardCtrler().Query()
-	num := cfg.Num
+	num := cfg.ConfigVersion
 
 	state := 0
 	ngid := tester.ShardGroupId(0)
@@ -310,8 +310,8 @@ func (ts *Test) partitionCtrler(ck kvtest.IKVClerk, gid tester.ShardGroupId, ka,
 		s = "leave"
 	}
 
-	if cfg.Num <= num {
-		ts.Fatalf("didn't recover; expected %d > %d", num, cfg.Num)
+	if cfg.ConfigVersion <= num {
+		ts.Fatalf("didn't recover; expected %d > %d", num, cfg.ConfigVersion)
 	}
 
 	//log.Printf("%v: recovered %v %v %v", sck0.Id(), time.Now().Sub(t), s, cfg)
@@ -338,7 +338,7 @@ func (ts *Test) partitionCtrler(ck kvtest.IKVClerk, gid tester.ShardGroupId, ka,
 	//log.Printf("reconnected %v", time.Now().Sub(t))
 
 	for i := 0; i < len(ka); i++ {
-		ts.CheckGet(ck, ka[i], va[i], rpc.Tversion(1))
+		ts.CheckGet(ck, ka[i], va[i], rpc.DataVersion(1))
 	}
 
 	//log.Printf("done get %v", time.Now().Sub(t))
@@ -388,7 +388,7 @@ func (ts *Test) concurCtrler(ck kvtest.IKVClerk, ka, va []string) {
 	}
 
 	for i := 0; i < len(ka); i++ {
-		ts.CheckGet(ck, ka[i], va[i], rpc.Tversion(1))
+		ts.CheckGet(ck, ka[i], va[i], rpc.DataVersion(1))
 	}
 
 }

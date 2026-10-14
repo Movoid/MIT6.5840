@@ -26,7 +26,7 @@ const (
 // which shard is a key in?
 // please use this function,
 // and please do not change it.
-func Key2Shard(key string) ShardId {
+func ShardIdOfKey(key string) ShardId {
 	h := fnv.New32a()
 	h.Write([]byte(key))
 	shard := ShardId(ShardId(h.Sum32()) % NShards)
@@ -36,14 +36,14 @@ func Key2Shard(key string) ShardId {
 // A configuration -- an assignment of shards to groups.
 // Please don't change this.
 type ShardConfig struct {
-	Num    ConfigVersion                    // config number
-	Shards [NShards]tester.ShardGroupId     // shard -> gid
-	Groups map[tester.ShardGroupId][]string // gid -> servers[]
+	ConfigVersion  ConfigVersion                    // config number
+	GroupIdOfShard [NShards]tester.ShardGroupId     // shard -> gid
+	NameArrOfGroup map[tester.ShardGroupId][]string // gid -> servers[]
 }
 
 func MakeShardConfig() *ShardConfig {
 	c := &ShardConfig{
-		Groups: make(map[tester.ShardGroupId][]string),
+		NameArrOfGroup: make(map[tester.ShardGroupId][]string),
 	}
 	return c
 }
@@ -66,12 +66,12 @@ func FromString(s string) *ShardConfig {
 
 func (cfg *ShardConfig) Copy() *ShardConfig {
 	c := MakeShardConfig()
-	c.Num = cfg.Num
-	c.Shards = cfg.Shards
-	for k, srvs := range cfg.Groups {
+	c.ConfigVersion = cfg.ConfigVersion
+	c.GroupIdOfShard = cfg.GroupIdOfShard
+	for k, srvs := range cfg.NameArrOfGroup {
 		s := make([]string, len(srvs))
 		copy(s, srvs)
-		c.Groups[k] = s
+		c.NameArrOfGroup[k] = s
 	}
 	return c
 }
@@ -79,7 +79,7 @@ func (cfg *ShardConfig) Copy() *ShardConfig {
 // mostgroup, mostn, leastgroup, leastn
 func analyze(c *ShardConfig) (tester.ShardGroupId, int, tester.ShardGroupId, int) {
 	counts := map[tester.ShardGroupId]int{}
-	for _, g := range c.Shards {
+	for _, g := range c.GroupIdOfShard {
 		counts[g] += 1
 	}
 
@@ -89,9 +89,9 @@ func analyze(c *ShardConfig) (tester.ShardGroupId, int, tester.ShardGroupId, int
 	var lg tester.ShardGroupId = -1
 	// Enforce deterministic ordering, map iteration
 	// is randomized in go
-	groups := make([]tester.ShardGroupId, len(c.Groups))
+	groups := make([]tester.ShardGroupId, len(c.NameArrOfGroup))
 	i := 0
-	for k := range c.Groups {
+	for k := range c.NameArrOfGroup {
 		groups[i] = k
 		i++
 	}
@@ -121,19 +121,19 @@ func least(c *ShardConfig) tester.ShardGroupId {
 // modifies c.
 func (c *ShardConfig) Rebalance() {
 	// if no groups, un-assign all shards
-	if len(c.Groups) < 1 {
-		for s, _ := range c.Shards {
-			c.Shards[s] = 0
+	if len(c.NameArrOfGroup) < 1 {
+		for s, _ := range c.GroupIdOfShard {
+			c.GroupIdOfShard[s] = 0
 		}
 		return
 	}
 
 	// assign all unassigned shards
-	for s, g := range c.Shards {
-		_, ok := c.Groups[g]
+	for s, g := range c.GroupIdOfShard {
+		_, ok := c.NameArrOfGroup[g]
 		if ok == false {
 			lg := least(c)
-			c.Shards[s] = lg
+			c.GroupIdOfShard[s] = lg
 		}
 	}
 
@@ -144,9 +144,9 @@ func (c *ShardConfig) Rebalance() {
 			break
 		}
 		// move 1 shard from mg to lg
-		for s, g := range c.Shards {
+		for s, g := range c.GroupIdOfShard {
 			if g == mg {
-				c.Shards[s] = lg
+				c.GroupIdOfShard[s] = lg
 				break
 			}
 		}
@@ -156,12 +156,12 @@ func (c *ShardConfig) Rebalance() {
 func (cfg *ShardConfig) Join(servers map[tester.ShardGroupId][]string) bool {
 	changed := false
 	for gid, servers := range servers {
-		_, ok := cfg.Groups[gid]
+		_, ok := cfg.NameArrOfGroup[gid]
 		if ok {
 			log.Printf("re-Join %v", gid)
 			return false
 		}
-		for xgid, xservers := range cfg.Groups {
+		for xgid, xservers := range cfg.NameArrOfGroup {
 			for _, s1 := range xservers {
 				for _, s2 := range servers {
 					if s1 == s2 {
@@ -172,27 +172,27 @@ func (cfg *ShardConfig) Join(servers map[tester.ShardGroupId][]string) bool {
 		}
 		// new GID
 		// modify cfg to reflect the Join()
-		cfg.Groups[gid] = servers
+		cfg.NameArrOfGroup[gid] = servers
 		changed = true
 	}
 	if changed == false {
 		log.Fatalf("Join but no change")
 	}
-	cfg.Num += 1
+	cfg.ConfigVersion += 1
 	return true
 }
 
 func (cfg *ShardConfig) Leave(gids []tester.ShardGroupId) bool {
 	changed := false
 	for _, gid := range gids {
-		_, ok := cfg.Groups[gid]
+		_, ok := cfg.NameArrOfGroup[gid]
 		if ok == false {
 			// already no GID!
 			log.Printf("Leave(%v) but not in config", gid)
 			return false
 		} else {
 			// modify op.Config to reflect the Leave()
-			delete(cfg.Groups, gid)
+			delete(cfg.NameArrOfGroup, gid)
 			changed = true
 		}
 	}
@@ -200,7 +200,7 @@ func (cfg *ShardConfig) Leave(gids []tester.ShardGroupId) bool {
 		debug.PrintStack()
 		log.Fatalf("Leave but no change")
 	}
-	cfg.Num += 1
+	cfg.ConfigVersion += 1
 	return true
 }
 
@@ -221,13 +221,13 @@ func (cfg *ShardConfig) LeaveBalance(gids []tester.ShardGroupId) bool {
 }
 
 func (cfg *ShardConfig) GidServers(sh ShardId) (tester.ShardGroupId, []string, bool) {
-	gid := cfg.Shards[sh]
-	srvs, ok := cfg.Groups[gid]
+	gid := cfg.GroupIdOfShard[sh]
+	srvs, ok := cfg.NameArrOfGroup[gid]
 	return gid, srvs, ok
 }
 
 func (cfg *ShardConfig) IsMember(gid tester.ShardGroupId) bool {
-	for _, g := range cfg.Shards {
+	for _, g := range cfg.GroupIdOfShard {
 		if g == gid {
 			return true
 		}
@@ -236,13 +236,13 @@ func (cfg *ShardConfig) IsMember(gid tester.ShardGroupId) bool {
 }
 
 func (cfg *ShardConfig) CheckConfig(t *testing.T, groups []tester.ShardGroupId) {
-	if len(cfg.Groups) != len(groups) {
-		fatalf(t, "wanted %v groups, got %v", len(groups), len(cfg.Groups))
+	if len(cfg.NameArrOfGroup) != len(groups) {
+		fatalf(t, "wanted %v groups, got %v", len(groups), len(cfg.NameArrOfGroup))
 	}
 
 	// are the groups as expected?
 	for _, g := range groups {
-		_, ok := cfg.Groups[g]
+		_, ok := cfg.NameArrOfGroup[g]
 		if ok != true {
 			fatalf(t, "missing group %v", g)
 		}
@@ -250,8 +250,8 @@ func (cfg *ShardConfig) CheckConfig(t *testing.T, groups []tester.ShardGroupId) 
 
 	// any un-allocated shards?
 	if len(groups) > 0 {
-		for s, g := range cfg.Shards {
-			_, ok := cfg.Groups[g]
+		for s, g := range cfg.GroupIdOfShard {
+			_, ok := cfg.NameArrOfGroup[g]
 			if ok == false {
 				fatalf(t, "shard %v -> invalid group %v", s, g)
 			}
@@ -260,12 +260,12 @@ func (cfg *ShardConfig) CheckConfig(t *testing.T, groups []tester.ShardGroupId) 
 
 	// more or less balanced sharding?
 	counts := map[tester.ShardGroupId]int{}
-	for _, g := range cfg.Shards {
+	for _, g := range cfg.GroupIdOfShard {
 		counts[g] += 1
 	}
 	min := 257
 	max := 0
-	for g, _ := range cfg.Groups {
+	for g, _ := range cfg.NameArrOfGroup {
 		if counts[g] > max {
 			max = counts[g]
 		}

@@ -14,14 +14,17 @@ const (
 	// For future kvraft lab
 	ErrWrongLeader = "ErrWrongLeader"
 	ErrWrongGroup  = "ErrWrongGroup"
+
+	// Internal
+	ErrInternalTimeout = "ErrInternalTimeout"
 )
 
-type Tversion uint64
+type DataVersion uint64
 
 type PutArgs struct {
 	Key     string
 	Value   string
-	Version Tversion
+	Version DataVersion
 }
 
 type PutReply struct {
@@ -34,6 +37,6 @@ type GetArgs struct {
 
 type GetReply struct {
 	Value   string
-	Version Tversion
+	Version DataVersion
 	Err     Err
 }

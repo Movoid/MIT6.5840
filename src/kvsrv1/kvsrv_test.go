@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"6.5840/kvsrv1/rpc"
-	"6.5840/kvtest1"
+	kvtest "6.5840/kvtest1"
 )
 
 // Test Put with a single client and a reliable network
@@ -36,7 +36,7 @@ func TestReliablePut(t *testing.T) {
 		t.Fatalf("expected Put to fail with ErrVersion; got err=%v", err)
 	}
 
-	if err := ck.Put("y", Val, rpc.Tversion(1)); err != rpc.ErrNoKey {
+	if err := ck.Put("y", Val, rpc.DataVersion(1)); err != rpc.ErrNoKey {
 		t.Fatalf("expected Put to fail with ErrNoKey; got err=%v", err)
 	}
 
@@ -98,7 +98,7 @@ func TestMemPutManyClientsReliable(t *testing.T) {
 	m0 := ts.Config.Group(0).MemSize()
 
 	for i := 0; i < NCLIENT; i++ {
-		if err := cks[i].Put("k", v, rpc.Tversion(i)); err != rpc.OK {
+		if err := cks[i].Put("k", v, rpc.DataVersion(i)); err != rpc.OK {
 			t.Fatalf("Put failed %v", err)
 		}
 	}
@@ -126,7 +126,7 @@ func TestUnreliableNet(t *testing.T) {
 	retried := false
 	for try := 0; try < NTRY; try++ {
 		for i := 0; true; i++ {
-			if err := ts.PutJson(ck, "k", i, rpc.Tversion(try), 0); err != rpc.ErrMaybe {
+			if err := ts.PutJson(ck, "k", i, rpc.DataVersion(try), 0); err != rpc.ErrMaybe {
 				if i > 0 && err != rpc.ErrVersion {
 					t.Fatalf("Put shouldn't have happen more than once %v", err)
 				}
@@ -136,7 +136,7 @@ func TestUnreliableNet(t *testing.T) {
 			retried = true
 		}
 		v := 0
-		if ver := ts.GetJson(ck, "k", 0, &v); ver != rpc.Tversion(try+1) {
+		if ver := ts.GetJson(ck, "k", 0, &v); ver != rpc.DataVersion(try+1) {
 			t.Fatalf("Wrong version %d expect %d", ver, try+1)
 		}
 		if v != 0 {

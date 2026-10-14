@@ -42,7 +42,7 @@ func TestInitQuery5A(t *testing.T) {
 
 	// Read the initial configuration and check it
 	cfg := sck.Query()
-	if cfg.Num != 1 || cfg.Shards[0] != shardcfg.Gid1 {
+	if cfg.ConfigVersion != 1 || cfg.GroupIdOfShard[0] != shardcfg.Gid1 {
 		ts.t.Fatalf("Static wrong %v", cfg)
 	}
 	cfg.CheckConfig(t, []tester.ShardGroupId{shardcfg.Gid1})
@@ -63,7 +63,7 @@ func TestStaticOneShardGroup5A(t *testing.T) {
 	ka, va := ts.SpreadPuts(ck, NKEYS) // do some puts
 	n := len(ka)
 	for i := 0; i < n; i++ {
-		ts.CheckGet(ck, ka[i], va[i], rpc.Tversion(1)) // check the puts
+		ts.CheckGet(ck, ka[i], va[i], rpc.DataVersion(1)) // check the puts
 	}
 
 	// Shutdown raft leader of shardgrp and check that keys are
@@ -71,7 +71,7 @@ func TestStaticOneShardGroup5A(t *testing.T) {
 	ts.shutdownLeader(ck.(*kvtest.TestClerk), shardcfg.Gid1)
 
 	for i := 0; i < n; i++ {
-		ts.CheckGet(ck, ka[i], va[i], rpc.Tversion(1)) // check the puts
+		ts.CheckGet(ck, ka[i], va[i], rpc.DataVersion(1)) // check the puts
 	}
 }
 
@@ -95,8 +95,8 @@ func TestJoinBasic5A(t *testing.T) {
 	}
 
 	cfg1 := sck.Query()
-	if cfg.Num+1 != cfg1.Num {
-		ts.t.Fatalf("TestJoinBasic5A: wrong num %d expected %d ", cfg1.Num, cfg.Num+1)
+	if cfg.ConfigVersion+1 != cfg1.ConfigVersion {
+		ts.t.Fatalf("TestJoinBasic5A: wrong num %d expected %d ", cfg1.ConfigVersion, cfg.ConfigVersion+1)
 	}
 
 	if !cfg1.IsMember(gid2) {
@@ -106,13 +106,13 @@ func TestJoinBasic5A(t *testing.T) {
 	ts.checkShutdownSharding(gid1, ka, va)
 
 	for i := 0; i < len(ka); i++ {
-		ts.CheckGet(ck, ka[i], va[i], rpc.Tversion(1))
+		ts.CheckGet(ck, ka[i], va[i], rpc.DataVersion(1))
 	}
 
 	ts.checkShutdownSharding(gid2, ka, va)
 
 	for i := 0; i < len(ka); i++ {
-		ts.CheckGet(ck, ka[i], va[i], rpc.Tversion(1))
+		ts.CheckGet(ck, ka[i], va[i], rpc.DataVersion(1))
 	}
 }
 
@@ -142,7 +142,7 @@ func TestDeleteBasic5A(t *testing.T) {
 	// push more Get's through so that all peers snapshot
 	for j := 0; j < 5; j++ {
 		for i := 0; i < len(ka); i++ {
-			ts.CheckGet(ck, ka[i], va[i], rpc.Tversion(1))
+			ts.CheckGet(ck, ka[i], va[i], rpc.DataVersion(1))
 		}
 	}
 
@@ -171,7 +171,7 @@ func TestJoinLeaveBasic5A(t *testing.T) {
 	ts.checkShutdownSharding(gid1, ka, va)
 
 	for i := 0; i < len(ka); i++ {
-		ts.CheckGet(ck, ka[i], va[i], rpc.Tversion(1))
+		ts.CheckGet(ck, ka[i], va[i], rpc.DataVersion(1))
 	}
 
 	ts.leave(sck, shardcfg.Gid1)
@@ -182,7 +182,7 @@ func TestJoinLeaveBasic5A(t *testing.T) {
 	ts.Group(shardcfg.Gid1).Shutdown()
 
 	for i := 0; i < len(ka); i++ {
-		ts.CheckGet(ck, ka[i], va[i], rpc.Tversion(1))
+		ts.CheckGet(ck, ka[i], va[i], rpc.DataVersion(1))
 	}
 
 	// bring the crashed shard/group back to life.
@@ -192,7 +192,7 @@ func TestJoinLeaveBasic5A(t *testing.T) {
 	ts.join(sck, shardcfg.Gid1, ts.Group(shardcfg.Gid1).SrvNames())
 
 	for i := 0; i < len(ka); i++ {
-		ts.CheckGet(ck, ka[i], va[i], rpc.Tversion(1))
+		ts.CheckGet(ck, ka[i], va[i], rpc.DataVersion(1))
 	}
 
 	ts.checkShutdownSharding(gid2, ka, va)
@@ -215,13 +215,13 @@ func joinLeave5A(t *testing.T, reliable bool, part string) {
 	ts.checkShutdownSharding(grps[0], ka, va)
 
 	for i := 0; i < len(ka); i++ {
-		ts.CheckGet(ck, ka[i], va[i], rpc.Tversion(1))
+		ts.CheckGet(ck, ka[i], va[i], rpc.DataVersion(1))
 	}
 
 	ts.leaveGroups(sck, grps)
 
 	for i := 0; i < len(ka); i++ {
-		ts.CheckGet(ck, ka[i], va[i], rpc.Tversion(1))
+		ts.CheckGet(ck, ka[i], va[i], rpc.DataVersion(1))
 	}
 }
 
@@ -253,7 +253,7 @@ func TestShutdown5A(t *testing.T) {
 	ts.checkShutdownSharding(grps[0], ka, va)
 
 	for i := 0; i < len(ka); i++ {
-		ts.CheckGet(ck, ka[i], va[i], rpc.Tversion(1))
+		ts.CheckGet(ck, ka[i], va[i], rpc.DataVersion(1))
 	}
 
 	for i := shardcfg.Gid1; i < NGRP; i++ {
@@ -265,7 +265,7 @@ func TestShutdown5A(t *testing.T) {
 	}
 
 	for i := 0; i < len(ka); i++ {
-		ts.CheckGet(ck, ka[i], va[i], rpc.Tversion(1))
+		ts.CheckGet(ck, ka[i], va[i], rpc.DataVersion(1))
 	}
 }
 
@@ -305,11 +305,11 @@ func TestProgressShutdown5A(t *testing.T) {
 	ch := make(chan rpc.Err)
 	go func() {
 		for i := 0; i < len(ka); i++ {
-			s := shardcfg.Key2Shard(ka[i])
-			g := cfg.Shards[s]
+			s := shardcfg.ShardIdOfKey(ka[i])
+			g := cfg.GroupIdOfShard[s]
 			if _, ok := alive[g]; ok {
 				//log.Printf("key lookup %v(%d) gid %d", ka[i], s, g)
-				ts.CheckGet(ck, ka[i], va[i], rpc.Tversion(1))
+				ts.CheckGet(ck, ka[i], va[i], rpc.DataVersion(1))
 			}
 		}
 		ch <- rpc.OK
@@ -357,8 +357,8 @@ func TestProgressJoin5A(t *testing.T) {
 	// in moving shards
 	stable := make(map[shardcfg.ShardId]bool)
 	participating := make(map[tester.ShardGroupId]bool)
-	for i, g := range newcfg1.Shards {
-		if newcfg.Shards[i] == g {
+	for i, g := range newcfg1.GroupIdOfShard {
+		if newcfg.GroupIdOfShard[i] == g {
 			stable[shardcfg.ShardId(i)] = true
 		} else {
 			participating[g] = true
@@ -394,12 +394,12 @@ func TestProgressJoin5A(t *testing.T) {
 		nget := 0
 		for time.Now().Before(t) {
 			for i := 0; i < len(ka); i++ {
-				s := shardcfg.Key2Shard(ka[i])
+				s := shardcfg.ShardIdOfKey(ka[i])
 				if _, ok := stable[s]; ok {
-					g := newcfg1.Shards[s]
+					g := newcfg1.GroupIdOfShard[s]
 					if _, ok := participating[g]; ok {
 						// log.Printf("key lookup %v(%d) gid %d", ka[i], s, g)
-						ts.CheckGet(ck, ka[i], va[i], rpc.Tversion(1))
+						ts.CheckGet(ck, ka[i], va[i], rpc.DataVersion(1))
 						nget++
 					}
 				}
@@ -523,8 +523,8 @@ func TestJoinLeave5B(t *testing.T) {
 	}
 
 	cfg1 := sck.Query()
-	if cfg.Num+1 != cfg1.Num {
-		ts.t.Fatalf("wrong num %d expected %d ", cfg1.Num, cfg.Num+1)
+	if cfg.ConfigVersion+1 != cfg1.ConfigVersion {
+		ts.t.Fatalf("wrong num %d expected %d ", cfg1.ConfigVersion, cfg.ConfigVersion+1)
 	}
 
 	ts.Group(gid2).Shutdown()
@@ -552,7 +552,7 @@ func TestJoinLeave5B(t *testing.T) {
 		ts.Fatalf("Leave didn't complete")
 	}
 	for i := 0; i < len(ka); i++ {
-		ts.CheckGet(ck, ka[i], va[i], rpc.Tversion(1))
+		ts.CheckGet(ck, ka[i], va[i], rpc.DataVersion(1))
 	}
 }
 
@@ -653,7 +653,7 @@ func TestPartitionControllerJoin5C(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	for i := 0; i < len(ka); i++ {
-		ts.CheckGet(ck, ka[i], va[i], rpc.Tversion(1))
+		ts.CheckGet(ck, ka[i], va[i], rpc.DataVersion(1))
 	}
 }
 

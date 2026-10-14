@@ -13,7 +13,7 @@ import (
 
 type Entry struct {
 	Value       string
-	NextVersion rpc.Tversion
+	NextVersion rpc.DataVersion
 }
 
 type KVServer struct {

@@ -25,7 +25,7 @@ type KVServer struct {
 
 type Entry struct {
 	value       string
-	nextVersion rpc.Tversion
+	nextVersion rpc.DataVersion
 }
 
 func MakeKVServer() *KVServer {

@@ -10,8 +10,8 @@ import (
 	"github.com/anishathalye/porcupine"
 
 	"6.5840/kvsrv1/rpc"
-	"6.5840/models1"
-	"6.5840/tester1"
+	models "6.5840/models1"
+	tester "6.5840/tester1"
 )
 
 const linearizabilityCheckTimeout = 1 * time.Second
@@ -47,7 +47,7 @@ func (log *OpLog) Read() []porcupine.Operation {
 // the monotonic clock
 var t0 = time.Unix(0, 0)
 
-func Get(cfg *tester.Config, ck IKVClerk, key string, log *OpLog, cli int) (string, rpc.Tversion, rpc.Err) {
+func Get(cfg *tester.Config, ck IKVClerk, key string, log *OpLog, cli int) (string, rpc.DataVersion, rpc.Err) {
 	start := int64(time.Since(t0))
 	val, ver, err := ck.Get(key)
 	end := int64(time.Since(t0))
@@ -64,7 +64,7 @@ func Get(cfg *tester.Config, ck IKVClerk, key string, log *OpLog, cli int) (stri
 	return val, ver, err
 }
 
-func Put(cfg *tester.Config, ck IKVClerk, key string, value string, version rpc.Tversion, log *OpLog, cli int) rpc.Err {
+func Put(cfg *tester.Config, ck IKVClerk, key string, value string, version rpc.DataVersion, log *OpLog, cli int) rpc.Err {
 	start := int64(time.Since(t0))
 	err := ck.Put(key, value, version)
 	end := int64(time.Since(t0))
@@ -140,7 +140,7 @@ func checkPorcupine(t *testing.T, opLog *OpLog, nsec time.Duration) {
 }
 
 // Porcupine
-func (ts *Test) Get(ck IKVClerk, key string, cli int) (string, rpc.Tversion, rpc.Err) {
+func (ts *Test) Get(ck IKVClerk, key string, cli int) (string, rpc.DataVersion, rpc.Err) {
 	start := int64(time.Since(t0))
 	val, ver, err := ck.Get(key)
 	end := int64(time.Since(t0))
@@ -158,7 +158,7 @@ func (ts *Test) Get(ck IKVClerk, key string, cli int) (string, rpc.Tversion, rpc
 }
 
 // Porcupine
-func (ts *Test) Put(ck IKVClerk, key string, value string, version rpc.Tversion, cli int) rpc.Err {
+func (ts *Test) Put(ck IKVClerk, key string, value string, version rpc.DataVersion, cli int) rpc.Err {
 	start := int64(time.Since(t0))
 	err := ck.Put(key, value, version)
 	end := int64(time.Since(t0))

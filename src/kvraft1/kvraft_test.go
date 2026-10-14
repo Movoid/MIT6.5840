@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"6.5840/kvsrv1/rpc"
-	"6.5840/kvtest1"
+	kvtest "6.5840/kvtest1"
 	tester "6.5840/tester1"
 )
 
@@ -133,7 +133,7 @@ func (ts *Test) GenericTestSpeed() {
 	start := time.Now()
 	for i := 0; i < numOps; i++ {
 		s := time.Now()
-		if err := ck.Put("k", strconv.Itoa(i), rpc.Tversion(i)); err != rpc.OK {
+		if err := ck.Put("k", strconv.Itoa(i), rpc.DataVersion(i)); err != rpc.OK {
 			ts.t.Fatalf("Put err %v", err)
 		}
 		d := time.Since(s) / (5 * time.Millisecond)
@@ -198,7 +198,7 @@ func TestOnePartition4B(t *testing.T) {
 
 	ck := ts.MakeClerk()
 
-	ver0 := ts.PutAtLeastOnce(ck, "1", "13", rpc.Tversion(0), -1)
+	ver0 := ts.PutAtLeastOnce(ck, "1", "13", rpc.DataVersion(0), -1)
 	ck0 := ck.(*kvtest.TestClerk).IKVClerk.(*Clerk)
 	l := ck0.Leader()
 	text := fmt.Sprintf("leader found = %v", l)
@@ -216,8 +216,8 @@ func TestOnePartition4B(t *testing.T) {
 
 	ts.End()
 
-	done0 := make(chan rpc.Tversion)
-	done1 := make(chan rpc.Tversion)
+	done0 := make(chan rpc.DataVersion)
+	done1 := make(chan rpc.DataVersion)
 
 	ts.Begin("Test: no progress in minority (4B)")
 	tester.AnnotateCheckerBegin(fmt.Sprintf("submit Put(1, 15) and Get(1) to %v", p2))
@@ -260,7 +260,7 @@ func TestOnePartition4B(t *testing.T) {
 	time.Sleep(kvtest.ElectionTimeout)
 
 	tester.AnnotateCheckerBegin("status of Put(1, 15)")
-	ver15 := rpc.Tversion(0)
+	ver15 := rpc.DataVersion(0)
 	select {
 	case ver15 = <-done0:
 	case <-time.After(30 * 100 * time.Millisecond):
@@ -349,20 +349,20 @@ func TestSnapshotRPC4C(t *testing.T) {
 
 	ts.Begin("Test: InstallSnapshot RPC (4C)")
 
-	vera := ts.PutAtLeastOnce(ck, "a", "A", rpc.Tversion(0), -1)
+	vera := ts.PutAtLeastOnce(ck, "a", "A", rpc.DataVersion(0), -1)
 	ts.CheckGet(ck, "a", "A", vera)
 
-	verb := rpc.Tversion(0)
+	verb := rpc.DataVersion(0)
 	// a bunch of puts into the majority partition.
 	ts.Group(Gid).Partition([]int{0, 1}, []int{2})
 	tester.AnnotateTwoPartitions([]int{0, 1}, []int{2})
 	{
 		ck1 := ts.MakeClerkTo([]int{0, 1})
 		for i := 0; i < 50; i++ {
-			ts.PutAtLeastOnce(ck1, strconv.Itoa(i), strconv.Itoa(i), rpc.Tversion(0), -1)
+			ts.PutAtLeastOnce(ck1, strconv.Itoa(i), strconv.Itoa(i), rpc.DataVersion(0), -1)
 		}
 		time.Sleep(kvtest.ElectionTimeout)
-		verb = ts.PutAtLeastOnce(ck1, "b", "B", rpc.Tversion(0), -1)
+		verb = ts.PutAtLeastOnce(ck1, "b", "B", rpc.DataVersion(0), -1)
 	}
 
 	// check that the majority partition has thrown away
@@ -376,27 +376,27 @@ func TestSnapshotRPC4C(t *testing.T) {
 
 	// now make a group that requires participation of
 	// lagging server, so that it has to catch up.
-	verc := rpc.Tversion(0)
+	verc := rpc.DataVersion(0)
 	ts.Group(Gid).Partition([]int{0, 2}, []int{1})
 	tester.AnnotateTwoPartitions([]int{0, 2}, []int{1})
 	{
 		ck1 := ts.MakeClerkTo([]int{0, 2})
-		verc = ts.PutAtLeastOnce(ck1, "c", "C", rpc.Tversion(0), -1)
-		ts.PutAtLeastOnce(ck1, "d", "D", rpc.Tversion(0), -1)
+		verc = ts.PutAtLeastOnce(ck1, "c", "C", rpc.DataVersion(0), -1)
+		ts.PutAtLeastOnce(ck1, "d", "D", rpc.DataVersion(0), -1)
 		ts.CheckGet(ck1, "a", "A", vera)
 		ts.CheckGet(ck1, "b", "B", verb)
-		ts.CheckGet(ck1, "1", "1", rpc.Tversion(1))
-		ts.CheckGet(ck1, "49", "49", rpc.Tversion(1))
+		ts.CheckGet(ck1, "1", "1", rpc.DataVersion(1))
+		ts.CheckGet(ck1, "49", "49", rpc.DataVersion(1))
 	}
 
 	// now everybody
 	ts.Group(Gid).Partition([]int{0, 1, 2}, []int{})
 	tester.AnnotateClearFailure()
 
-	vere := ts.PutAtLeastOnce(ck, "e", "E", rpc.Tversion(0), -1)
+	vere := ts.PutAtLeastOnce(ck, "e", "E", rpc.DataVersion(0), -1)
 	ts.CheckGet(ck, "c", "C", verc)
 	ts.CheckGet(ck, "e", "E", vere)
-	ts.CheckGet(ck, "1", "1", rpc.Tversion(1))
+	ts.CheckGet(ck, "1", "1", rpc.DataVersion(1))
 }
 
 // are the snapshots not too huge? 500 bytes is a generous bound for the
@@ -410,7 +410,7 @@ func TestSnapshotSize4C(t *testing.T) {
 
 	ck := ts.MakeClerk()
 
-	ver := rpc.Tversion(0)
+	ver := rpc.DataVersion(0)
 	for i := 0; i < 200; i++ {
 		ver = ts.PutAtLeastOnce(ck, "x", "0", ver, -1)
 		ts.CheckGet(ck, "x", "0", ver)

@@ -40,7 +40,7 @@ func (self *Clerk) Leader() int {
 // The types of args and reply (including whether they are pointers)
 // must match the declared types of the RPC handler function's
 // arguments. Additionally, reply must be passed as a pointer.
-func (self *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
+func (self *Clerk) Get(key string) (string, rpc.DataVersion, rpc.Err) {
 
 	// You will have to modify this function.
 
@@ -94,7 +94,7 @@ func (self *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 // The types of args and reply (including whether they are pointers)
 // must match the declared types of the RPC handler function's
 // arguments. Additionally, reply must be passed as a pointer.
-func (self *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
+func (self *Clerk) Put(key string, value string, version rpc.DataVersion) rpc.Err {
 	// You will have to modify this function.
 
 	args := rpc.PutArgs{Key: key, Value: value, Version: version}

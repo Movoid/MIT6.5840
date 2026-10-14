@@ -30,8 +30,8 @@ func RandValue(n int) string {
 }
 
 type IKVClerk interface {
-	Get(string) (string, rpc.Tversion, rpc.Err)
-	Put(string, string, rpc.Tversion) rpc.Err
+	Get(string) (string, rpc.DataVersion, rpc.Err)
+	Put(string, string, rpc.DataVersion) rpc.Err
 }
 
 type TestClerk struct {
@@ -40,12 +40,12 @@ type TestClerk struct {
 	Cfg  *tester.Config
 }
 
-func (tck *TestClerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
+func (tck *TestClerk) Put(key string, value string, version rpc.DataVersion) rpc.Err {
 	tck.Cfg.OpInc()
 	return tck.IKVClerk.Put(key, value, version)
 }
 
-func (tck *TestClerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
+func (tck *TestClerk) Get(key string) (string, rpc.DataVersion, rpc.Err) {
 	tck.Cfg.OpInc()
 	return tck.IKVClerk.Get(key)
 }
@@ -90,7 +90,7 @@ func (ts *Test) MakeClerk() IKVClerk {
 }
 
 // Assumes different ck's put to different keys
-func (ts *Test) PutAtLeastOnce(ck IKVClerk, key, value string, ver rpc.Tversion, me int) rpc.Tversion {
+func (ts *Test) PutAtLeastOnce(ck IKVClerk, key, value string, ver rpc.DataVersion, me int) rpc.DataVersion {
 	verPrev := ver
 	for true {
 		err := ts.Put(ck, key, value, ver, me)
@@ -113,7 +113,7 @@ func (ts *Test) PutAtLeastOnce(ck IKVClerk, key, value string, ver rpc.Tversion,
 	return ver
 }
 
-func (ts *Test) CheckGet(ck IKVClerk, key, value string, version rpc.Tversion) {
+func (ts *Test) CheckGet(ck IKVClerk, key, value string, version rpc.DataVersion) {
 	tester.AnnotateCheckerBegin(fmt.Sprintf("checking Get(%v) = (%v, %v)", key, value, version))
 	val, ver, err := ts.Get(ck, key, 0)
 	if err != rpc.OK {
@@ -143,10 +143,10 @@ func (ts *Test) CheckPutConcurrent(ck IKVClerk, key string, rs []ClntRes, res *C
 		res.Nmaybe += r.Nmaybe
 	}
 	if reliable {
-		if ver0 != rpc.Tversion(res.Nok) {
+		if ver0 != rpc.DataVersion(res.Nok) {
 			ts.Fatalf("Reliable: Wrong number of puts: server %d clnts %v", ver0, res)
 		}
-	} else if ver0 > rpc.Tversion(res.Nok+res.Nmaybe) {
+	} else if ver0 > rpc.DataVersion(res.Nok+res.Nmaybe) {
 		ts.Fatalf("Unreliable: Wrong number of puts: server %d clnts %v", ver0, res)
 	}
 }
@@ -180,7 +180,7 @@ func (ts *Test) SpawnClientsAndWait(nclnt int, t time.Duration, fn Fclnt) []Clnt
 	return rs
 }
 
-func (ts *Test) GetJson(ck IKVClerk, key string, me int, v any) rpc.Tversion {
+func (ts *Test) GetJson(ck IKVClerk, key string, me int, v any) rpc.DataVersion {
 	if val, ver, err := Get(ts.Config, ck, key, ts.oplog, me); err == rpc.OK {
 		if err := json.Unmarshal([]byte(val), v); err != nil {
 			ts.Fatalf("Unmarshal err %v", ver)
@@ -192,7 +192,7 @@ func (ts *Test) GetJson(ck IKVClerk, key string, me int, v any) rpc.Tversion {
 	}
 }
 
-func (ts *Test) PutJson(ck IKVClerk, key string, v any, ver rpc.Tversion, me int) rpc.Err {
+func (ts *Test) PutJson(ck IKVClerk, key string, v any, ver rpc.DataVersion, me int) rpc.Err {
 	b, err := json.Marshal(v)
 	if err != nil {
 		ts.Fatalf("%d: marshal %v", me, err)
@@ -200,7 +200,7 @@ func (ts *Test) PutJson(ck IKVClerk, key string, v any, ver rpc.Tversion, me int
 	return Put(ts.Config, ck, key, string(b), ver, ts.oplog, me)
 }
 
-func (ts *Test) PutAtLeastOnceJson(ck IKVClerk, key string, value any, ver rpc.Tversion, me int) rpc.Tversion {
+func (ts *Test) PutAtLeastOnceJson(ck IKVClerk, key string, value any, ver rpc.DataVersion, me int) rpc.DataVersion {
 	for true {
 		if err := ts.PutJson(ck, key, value, 0, me); err != rpc.ErrMaybe {
 			break
@@ -212,12 +212,12 @@ func (ts *Test) PutAtLeastOnceJson(ck IKVClerk, key string, value any, ver rpc.T
 
 type EntryV struct {
 	Id int
-	V  rpc.Tversion
+	V  rpc.DataVersion
 }
 
 // Keep trying until we get one put succeeds while other clients
 // tryint to put to the same key
-func (ts *Test) OnePut(me int, ck IKVClerk, key string, ver rpc.Tversion) (rpc.Tversion, bool) {
+func (ts *Test) OnePut(me int, ck IKVClerk, key string, ver rpc.DataVersion) (rpc.DataVersion, bool) {
 	for true {
 		err := ts.PutJson(ck, key, EntryV{me, ver}, ver, me)
 		if !(err == rpc.OK || err == rpc.ErrVersion || err == rpc.ErrMaybe) {
@@ -270,9 +270,9 @@ func (ts *Test) Partitioner(gid tester.ShardGroupId, ch chan bool) {
 // One of perhaps many clients doing OnePut's until done signal.
 func (ts *Test) OneClientPut(cli int, ck IKVClerk, ka []string, done chan struct{}) ClntRes {
 	res := ClntRes{}
-	verm := make(map[string]rpc.Tversion)
+	verm := make(map[string]rpc.DataVersion)
 	for _, k := range ka {
-		verm[k] = rpc.Tversion(0)
+		verm[k] = rpc.DataVersion(0)
 	}
 	ok := false
 	for true {
@@ -308,10 +308,10 @@ func (ts *Test) SpreadPutsSize(ck IKVClerk, n, valsz int) ([]string, []string) {
 	va := make([]string, n)
 	for i := 0; i < n; i++ {
 		va[i] = tester.Randstring(valsz)
-		ck.Put(ka[i], va[i], rpc.Tversion(0))
+		ck.Put(ka[i], va[i], rpc.DataVersion(0))
 	}
 	for i := 0; i < n; i++ {
-		ts.CheckGet(ck, ka[i], va[i], rpc.Tversion(1))
+		ts.CheckGet(ck, ka[i], va[i], rpc.DataVersion(1))
 	}
 	return ka, va
 }
@@ -370,7 +370,7 @@ type EntryN struct {
 
 // check reads the latest value for key "k" and checks that it has the
 // correct tuples.
-func (ts *Test) CheckAppends(es []EntryN, nclnt int, rs []ClntRes, ver rpc.Tversion) {
+func (ts *Test) CheckAppends(es []EntryN, nclnt int, rs []ClntRes, ver rpc.DataVersion) {
 	expect := make(map[int]int)
 	skipped := make(map[int]int)
 	for i := 0; i < nclnt; i++ {

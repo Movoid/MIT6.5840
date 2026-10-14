@@ -29,7 +29,7 @@ func MakeClerk(clnt *tester.Clnt, server string) kvtest.IKVClerk {
 // The types of args and reply (including whether they are pointers)
 // must match the declared types of the RPC handler function's
 // arguments. Additionally, reply must be passed as a pointer.
-func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
+func (ck *Clerk) Get(key string) (string, rpc.DataVersion, rpc.Err) {
 	args := rpc.GetArgs{Key: key}
 	for {
 		var reply rpc.GetReply
@@ -58,7 +58,7 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 // The types of args and reply (including whether they are pointers)
 // must match the declared types of the RPC handler function's
 // arguments. Additionally, reply must be passed as a pointer.
-func (ck *Clerk) Put(key, value string, version rpc.Tversion) rpc.Err {
+func (ck *Clerk) Put(key, value string, version rpc.DataVersion) rpc.Err {
 	args := rpc.PutArgs{Key: key, Value: value, Version: version}
 	retried := false
 	for {
