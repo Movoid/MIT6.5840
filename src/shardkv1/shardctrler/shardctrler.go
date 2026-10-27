@@ -23,6 +23,7 @@ import (
 type ShardCtrler struct {
 	clntForConfigServer  *tester.Clnt
 	clerkForConfigServer kvtest.IKVClerk
+	clerkOfGroup         map[tester.ShardGroupId]*shardgrp.Clerk
 
 	killed int32 // set by Kill()
 
@@ -31,7 +32,10 @@ type ShardCtrler struct {
 
 // Make a ShardCltler, which stores its state in a kvsrv.
 func MakeShardCtrler(clnt *tester.Clnt) *ShardCtrler {
-	controller := &ShardCtrler{clntForConfigServer: clnt}
+	controller := &ShardCtrler{
+		clntForConfigServer: clnt,
+		clerkOfGroup:        make(map[tester.ShardGroupId]*shardgrp.Clerk),
+	}
 
 	// 使用 Lab2 `kvsrv.MakeClerk()`, 复用 Lab2 的业务重试等逻辑来操作 clnt.
 	srv := tester.ServerName(tester.GRP0, 0)
@@ -71,53 +75,69 @@ func (self *ShardCtrler) InitConfig(cfg *shardcfg.ShardConfig) {
 	}
 }
 
+func (self *ShardCtrler) ensureGroupClerks(config *shardcfg.ShardConfig) {
+	for gid, servers := range config.NameArrOfGroup {
+		if self.clerkOfGroup[gid] == nil {
+			self.clerkOfGroup[gid] = shardgrp.MakeClerk(self.clntForConfigServer, servers)
+		}
+	}
+}
+
+func (self *ShardCtrler) syncGroupClerks(config *shardcfg.ShardConfig) {
+	// 添加新的 Group 的 Clerk
+	self.ensureGroupClerks(config)
+	// 删除 `config` 里不存在的 Group 的 Clerk
+	for gid := range self.clerkOfGroup {
+		if _, exists := config.NameArrOfGroup[gid]; !exists {
+			delete(self.clerkOfGroup, gid)
+		}
+	}
+}
+
 // Called by the tester to ask the controller to change the
 // configuration from the current one to new.  While the controller
 // changes the configuration it may be superseded by another
 // controller.
 // **IMPORTANT**
-// `ShardCtrler.ChangeConfigTo` 可以静默失败.
+// `ShardCtrler.ChangeConfigTo()` 可以静默失败.
 func (self *ShardCtrler) ChangeConfigTo(new *shardcfg.ShardConfig) {
-	raw, version, err := self.clerkForConfigServer.Get("config")
+	rawConfig, version, err := self.clerkForConfigServer.Get("config")
 	if err != rpc.OK {
 		log.Fatalf("`ShardCtrler.ChangeConfigTo` read config failed: %v", err)
 	}
-	old := shardcfg.FromString(raw)
-	if new.ConfigVersion <= old.ConfigVersion {
+	oldConfig := shardcfg.FromString(rawConfig)
+	if new.ConfigVersion <= oldConfig.ConfigVersion {
 		return
 	}
 
 	// Part A: configuration changes are invoked sequentially. Validate all
 	// endpoints before freezing any shard, and use the old directory for sources.
-	for shard, source := range old.GroupIdOfShard {
-		destination := new.GroupIdOfShard[shard]
-		if source != destination && (len(old.NameArrOfGroup[source]) == 0 || len(new.NameArrOfGroup[destination]) == 0) {
+	for shard, srcGroupId := range oldConfig.GroupIdOfShard {
+		dstGroupId := new.GroupIdOfShard[shard]
+		if srcGroupId != dstGroupId && (len(oldConfig.NameArrOfGroup[srcGroupId]) == 0 || len(new.NameArrOfGroup[dstGroupId]) == 0) {
 			return
 		}
 	}
 
-	sources := make(map[tester.ShardGroupId]*shardgrp.Clerk)
-	destinations := make(map[tester.ShardGroupId]*shardgrp.Clerk)
-	for shard, source := range old.GroupIdOfShard {
+	// 迁移期间保留旧配置的源组, 同时补建新配置的目标组.
+	self.syncGroupClerks(oldConfig)
+	self.ensureGroupClerks(new)
+	for shard, source := range oldConfig.GroupIdOfShard {
 		destination := new.GroupIdOfShard[shard]
+		// Shard 所属的 Group 不变, 无需迁移
 		if source == destination {
 			continue
 		}
-		if sources[source] == nil {
-			sources[source] = shardgrp.MakeClerk(self.clntForConfigServer, old.NameArrOfGroup[source])
-		}
-		if destinations[destination] == nil {
-			destinations[destination] = shardgrp.MakeClerk(self.clntForConfigServer, new.NameArrOfGroup[destination])
-		}
+
 		id := shardcfg.ShardId(shard)
-		state, _, err := sources[source].FreezeShard(id, new.ConfigVersion)
+		state, _, err := self.clerkOfGroup[source].FreezeShard(id, new.ConfigVersion)
 		if err != rpc.OK {
 			return
 		}
-		if err := destinations[destination].InstallShard(id, state, new.ConfigVersion); err != rpc.OK {
+		if err := self.clerkOfGroup[destination].InstallShard(id, state, new.ConfigVersion); err != rpc.OK {
 			return
 		}
-		if err := sources[source].DeleteShard(id, new.ConfigVersion); err != rpc.OK {
+		if err := self.clerkOfGroup[source].DeleteShard(id, new.ConfigVersion); err != rpc.OK {
 			return
 		}
 	}
@@ -127,7 +147,11 @@ func (self *ShardCtrler) ChangeConfigTo(new *shardcfg.ShardConfig) {
 	target := new.String()
 	for {
 		err := self.clerkForConfigServer.Put("config", target, version)
-		if err == rpc.OK || err == rpc.ErrVersion {
+		if err == rpc.OK {
+			self.syncGroupClerks(new)
+			return
+		}
+		if err == rpc.ErrVersion {
 			return
 		}
 		if err != rpc.ErrMaybe {
@@ -137,7 +161,11 @@ func (self *ShardCtrler) ChangeConfigTo(new *shardcfg.ShardConfig) {
 		if err != rpc.OK {
 			log.Fatalf("`ShardCtrler.ChangeConfigTo` verify config failed: %v", err)
 		}
-		if current == target || currentVersion != version {
+		if current == target {
+			self.syncGroupClerks(new)
+			return
+		}
+		if currentVersion != version {
 			return
 		}
 	}
