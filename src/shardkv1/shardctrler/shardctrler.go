@@ -47,7 +47,32 @@ func MakeShardCtrler(clnt *tester.Clnt) *ShardCtrler {
 // controller. In part A, this method doesn't need to do anything. In
 // B and C, this method implements recovery.
 func (self *ShardCtrler) InitController() {
-
+	for {
+		// Read next first: a newer next cannot be paired with an older current
+		// from before its predecessor completed.
+		rawNext, _, err := self.clerkForConfigServer.Get("next")
+		if err == rpc.ErrNoKey {
+			return
+		}
+		if err != rpc.OK {
+			log.Fatalf("InitController: read next failed: %v", err)
+		}
+		next := shardcfg.FromString(rawNext)
+		// **IMPORTANT**
+		// 读取 `next` 和 `current` 的两个操作是两次原子操作.
+		// 可能会出现 `next.ConfigVersion < current.ConfigVersion` 的情况,
+		// 因为这期间可能完成了一次配置迁移.
+		rawCurrent, version, err := self.clerkForConfigServer.Get("current")
+		if err != rpc.OK {
+			log.Fatalf("InitController: read config failed: %v", err)
+		}
+		current := shardcfg.FromString(rawCurrent)
+		if next.ConfigVersion <= current.ConfigVersion {
+			self.syncGroupClerks(current)
+			return
+		}
+		self.moveShards(current, next, version)
+	}
 }
 
 // Called once by the tester to supply the first configuration.  You
@@ -58,12 +83,12 @@ func (self *ShardCtrler) InitController() {
 func (self *ShardCtrler) InitConfig(cfg *shardcfg.ShardConfig) {
 	// Your code here
 	rawCfg := cfg.String()
-	err := self.clerkForConfigServer.Put("config", rawCfg, 0)
+	err := self.clerkForConfigServer.Put("current", rawCfg, 0)
 
 	// 需要处理 `rpc.ErrMaybe`,
 	// 可能第一次成功的 Put Reply 丢失, 重试后得到 ErrMaybe.
 	if err == rpc.ErrMaybe {
-		savedRawConfig, _, readErr := self.clerkForConfigServer.Get("config")
+		savedRawConfig, _, readErr := self.clerkForConfigServer.Get("current")
 		if readErr == rpc.OK && savedRawConfig == rawCfg {
 			return
 		}
@@ -101,7 +126,12 @@ func (self *ShardCtrler) syncGroupClerks(config *shardcfg.ShardConfig) {
 // **IMPORTANT**
 // `ShardCtrler.ChangeConfigTo()` 可以静默失败.
 func (self *ShardCtrler) ChangeConfigTo(new *shardcfg.ShardConfig) {
-	rawConfig, version, err := self.clerkForConfigServer.Get("config")
+	self.InitController()
+	rawNext, nextVersion, nextErr := self.clerkForConfigServer.Get("next")
+	if nextErr != rpc.OK && nextErr != rpc.ErrNoKey {
+		log.Fatalf("ChangeConfigTo: read next failed: %v", nextErr)
+	}
+	rawConfig, version, err := self.clerkForConfigServer.Get("current")
 	if err != rpc.OK {
 		log.Fatalf("`ShardCtrler.ChangeConfigTo` read config failed: %v", err)
 	}
@@ -118,37 +148,63 @@ func (self *ShardCtrler) ChangeConfigTo(new *shardcfg.ShardConfig) {
 			return
 		}
 	}
+	// Persist the complete intent before any shard changes. Never replace an
+	// already selected target with the same (or a newer) configuration number.
+	if nextErr == rpc.OK && shardcfg.FromString(rawNext).ConfigVersion >= new.ConfigVersion {
+		self.InitController()
+		return
+	}
+	target := new.String()
+	err = self.clerkForConfigServer.Put("next", target, nextVersion)
+	if err != rpc.OK {
+		if err != rpc.ErrMaybe && err != rpc.ErrVersion {
+			log.Fatalf("ChangeConfigTo: save next failed: %v", err)
+		}
+		stored, _, readErr := self.clerkForConfigServer.Get("next")
+		if readErr != rpc.OK || stored != target {
+			return
+		}
+	}
+	self.moveShards(oldConfig, new, version)
+}
 
+// Replay the selected migration using its original configuration number.
+func (self *ShardCtrler) moveShards(oldConfig, newConfig *shardcfg.ShardConfig, version rpc.DataVersion) {
 	// 迁移期间保留旧配置的源组, 同时补建新配置的目标组.
 	self.syncGroupClerks(oldConfig)
-	self.ensureGroupClerks(new)
+	self.ensureGroupClerks(newConfig)
 	for shard, source := range oldConfig.GroupIdOfShard {
-		destination := new.GroupIdOfShard[shard]
+		destination := newConfig.GroupIdOfShard[shard]
 		// Shard 所属的 Group 不变, 无需迁移
 		if source == destination {
 			continue
 		}
 
 		id := shardcfg.ShardId(shard)
-		state, _, err := self.clerkOfGroup[source].FreezeShard(id, new.ConfigVersion)
+		state, sourceVersion, err := self.clerkOfGroup[source].FreezeShard(id, newConfig.ConfigVersion)
+		if err == rpc.ErrWrongGroup && sourceVersion == newConfig.ConfigVersion {
+			// This was the source in oldConfig. At this version, Freeze only
+			// rejects it after Delete; Delete follows a successful Install.
+			continue
+		}
 		if err != rpc.OK {
 			return
 		}
-		if err := self.clerkOfGroup[destination].InstallShard(id, state, new.ConfigVersion); err != rpc.OK {
+		if err := self.clerkOfGroup[destination].InstallShard(id, state, newConfig.ConfigVersion); err != rpc.OK {
 			return
 		}
-		if err := self.clerkOfGroup[source].DeleteShard(id, new.ConfigVersion); err != rpc.OK {
+		if err := self.clerkOfGroup[source].DeleteShard(id, newConfig.ConfigVersion); err != rpc.OK {
 			return
 		}
 	}
 
 	// Publish only after every move completes. A lost Put reply can produce
 	// ErrMaybe; read back before deciding whether another attempt is needed.
-	target := new.String()
+	target := newConfig.String()
 	for {
-		err := self.clerkForConfigServer.Put("config", target, version)
+		err := self.clerkForConfigServer.Put("current", target, version)
 		if err == rpc.OK {
-			self.syncGroupClerks(new)
+			self.syncGroupClerks(newConfig)
 			return
 		}
 		if err == rpc.ErrVersion {
@@ -157,12 +213,12 @@ func (self *ShardCtrler) ChangeConfigTo(new *shardcfg.ShardConfig) {
 		if err != rpc.ErrMaybe {
 			log.Fatalf("`ShardCtrler.ChangeConfigTo` publish failed: %v", err)
 		}
-		current, currentVersion, err := self.clerkForConfigServer.Get("config")
+		current, currentVersion, err := self.clerkForConfigServer.Get("current")
 		if err != rpc.OK {
 			log.Fatalf("`ShardCtrler.ChangeConfigTo` verify config failed: %v", err)
 		}
 		if current == target {
-			self.syncGroupClerks(new)
+			self.syncGroupClerks(newConfig)
 			return
 		}
 		if currentVersion != version {
@@ -174,7 +230,7 @@ func (self *ShardCtrler) ChangeConfigTo(new *shardcfg.ShardConfig) {
 // Return the current configuration
 func (self *ShardCtrler) Query() *shardcfg.ShardConfig {
 	// Your code here.
-	var rawCfg, _, err = self.clerkForConfigServer.Get("config")
+	var rawCfg, _, err = self.clerkForConfigServer.Get("current")
 	if err != rpc.OK {
 		log.Fatalf("`ShardCtrler.Query` failed: %v\n", err)
 	}
