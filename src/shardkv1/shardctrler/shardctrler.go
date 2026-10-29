@@ -6,12 +6,14 @@ package shardctrler
 
 import (
 	"log"
+	"time"
 
 	kvsrv "6.5840/kvsrv1"
 	"6.5840/kvsrv1/rpc"
 	kvtest "6.5840/kvtest1"
 	"6.5840/shardkv1/shardcfg"
 	"6.5840/shardkv1/shardgrp"
+	"6.5840/shardkv1/shardgrp/shardrpc"
 	tester "6.5840/tester1"
 )
 
@@ -168,6 +170,21 @@ func (self *ShardCtrler) ChangeConfigTo(new *shardcfg.ShardConfig) {
 	self.moveShards(oldConfig, new, version)
 }
 
+// Retry communication failures only while this migration is still pending.
+// False means another controller already published this migration (or a newer
+// one). It does not mean that the failed RPC succeeded.
+func (self *ShardCtrler) retryMigration(num shardcfg.ConfigVersion, attempt func() bool) bool {
+	for {
+		if attempt() {
+			return true
+		}
+		if self.Query().ConfigVersion >= num {
+			return false
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 // Replay the selected migration using its original configuration number.
 func (self *ShardCtrler) moveShards(oldConfig, newConfig *shardcfg.ShardConfig, version rpc.DataVersion) {
 	// 迁移期间保留旧配置的源组, 同时补建新配置的目标组.
@@ -181,19 +198,36 @@ func (self *ShardCtrler) moveShards(oldConfig, newConfig *shardcfg.ShardConfig, 
 		}
 
 		id := shardcfg.ShardId(shard)
-		state, sourceVersion, err := self.clerkOfGroup[source].FreezeShard(id, newConfig.ConfigVersion)
-		if err == rpc.ErrWrongGroup && sourceVersion == newConfig.ConfigVersion {
+		var frozen shardrpc.FreezeShardReply
+		if !self.retryMigration(newConfig.ConfigVersion, func() bool {
+			var ok bool
+			frozen, ok = self.clerkOfGroup[source].TryFreezeShard(id, newConfig.ConfigVersion)
+			return ok
+		}) {
+			return
+		}
+		if frozen.Err == rpc.ErrWrongGroup && frozen.CurConfigVersion == newConfig.ConfigVersion {
 			// This was the source in oldConfig. At this version, Freeze only
 			// rejects it after Delete; Delete follows a successful Install.
 			continue
 		}
-		if err != rpc.OK {
+		if frozen.Err != rpc.OK {
 			return
 		}
-		if err := self.clerkOfGroup[destination].InstallShard(id, state, newConfig.ConfigVersion); err != rpc.OK {
+		var installed shardrpc.InstallShardReply
+		if !self.retryMigration(newConfig.ConfigVersion, func() bool {
+			var ok bool
+			installed, ok = self.clerkOfGroup[destination].TryInstallShard(id, frozen.RawShardData, newConfig.ConfigVersion)
+			return ok
+		}) || installed.Err != rpc.OK {
 			return
 		}
-		if err := self.clerkOfGroup[source].DeleteShard(id, newConfig.ConfigVersion); err != rpc.OK {
+		var deleted shardrpc.DeleteShardReply
+		if !self.retryMigration(newConfig.ConfigVersion, func() bool {
+			var ok bool
+			deleted, ok = self.clerkOfGroup[source].TryDeleteShard(id, newConfig.ConfigVersion)
+			return ok
+		}) || deleted.Err != rpc.OK {
 			return
 		}
 	}

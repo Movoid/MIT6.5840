@@ -133,13 +133,32 @@ func (self *Clerk) Put(key string, value string, version rpc.DataVersion) rpc.Er
 
 // Return the server's version even on ErrWrongGroup so the controller can
 // distinguish obsolete migration requests during recovery.
-func (self *Clerk) FreezeShard(s shardcfg.ShardId, num shardcfg.ConfigVersion) ([]byte, shardcfg.ConfigVersion, rpc.Err) {
+// TryFreezeShard makes one attempt, allowing the controller to check current
+// between retries if the source group has retired.
+func (self *Clerk) TryFreezeShard(s shardcfg.ShardId, num shardcfg.ConfigVersion) (shardrpc.FreezeShardReply, bool) {
 	args := shardrpc.FreezeShardArgs{ShardId: s, ConfigVersion: num}
+	var reply shardrpc.FreezeShardReply
+	ok := self.clnt.Call(self.servers[self.leader], "KVServer.FreezeShard", &args, &reply)
+	if !ok || reply.Err == rpc.ErrWrongLeader {
+		self.switchLeader()
+		return reply, false
+	}
+	return reply, true
+}
+
+func (self *Clerk) FreezeShard(s shardcfg.ShardId, num shardcfg.ConfigVersion) ([]byte, shardcfg.ConfigVersion, rpc.Err) {
 	for {
-		var reply shardrpc.FreezeShardReply
-		ok := self.clnt.Call(self.servers[self.leader], "KVServer.FreezeShard", &args, &reply)
-		if !ok || reply.Err == rpc.ErrWrongLeader {
-			self.switchLeader()
+		reply, ok := self.TryFreezeShard(s, num)
+		// **IMPORTANT**
+		// 如果在 `next` 未完成 config 迁移时,
+		// A Controller, B Controller 同时接手任务,
+		// 且 A 先完成了迁移并把 `current` 更新为 `next`,
+		// 如果之后 B 才开始 `Clerk.FreezeShard()` 等操作,
+		// 且 **相关 Shard Group 已经 shutdown**,
+		// 则此时 RPC 会失败.
+		// 不能在这种情况无限重试.
+		// Controller 使用 TryFreezeShard，在重试之间检查已发布的 current。
+		if !ok {
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
@@ -147,13 +166,22 @@ func (self *Clerk) FreezeShard(s shardcfg.ShardId, num shardcfg.ConfigVersion) (
 	}
 }
 
-func (self *Clerk) InstallShard(s shardcfg.ShardId, state []byte, num shardcfg.ConfigVersion) rpc.Err {
+// TryInstallShard returns false on communication failure or a wrong leader.
+func (self *Clerk) TryInstallShard(s shardcfg.ShardId, state []byte, num shardcfg.ConfigVersion) (shardrpc.InstallShardReply, bool) {
 	args := shardrpc.InstallShardArgs{ShardId: s, RawShardData: state, ConfigVersion: num}
+	var reply shardrpc.InstallShardReply
+	ok := self.clnt.Call(self.servers[self.leader], "KVServer.InstallShard", &args, &reply)
+	if !ok || reply.Err == rpc.ErrWrongLeader {
+		self.switchLeader()
+		return reply, false
+	}
+	return reply, true
+}
+
+func (self *Clerk) InstallShard(s shardcfg.ShardId, state []byte, num shardcfg.ConfigVersion) rpc.Err {
 	for {
-		var reply shardrpc.InstallShardReply
-		ok := self.clnt.Call(self.servers[self.leader], "KVServer.InstallShard", &args, &reply)
-		if !ok || reply.Err == rpc.ErrWrongLeader {
-			self.switchLeader()
+		reply, ok := self.TryInstallShard(s, state, num)
+		if !ok {
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
@@ -161,13 +189,22 @@ func (self *Clerk) InstallShard(s shardcfg.ShardId, state []byte, num shardcfg.C
 	}
 }
 
-func (self *Clerk) DeleteShard(s shardcfg.ShardId, num shardcfg.ConfigVersion) rpc.Err {
+// TryDeleteShard returns false on communication failure or a wrong leader.
+func (self *Clerk) TryDeleteShard(s shardcfg.ShardId, num shardcfg.ConfigVersion) (shardrpc.DeleteShardReply, bool) {
 	args := shardrpc.DeleteShardArgs{ShardId: s, ConfigVersion: num}
+	var reply shardrpc.DeleteShardReply
+	ok := self.clnt.Call(self.servers[self.leader], "KVServer.DeleteShard", &args, &reply)
+	if !ok || reply.Err == rpc.ErrWrongLeader {
+		self.switchLeader()
+		return reply, false
+	}
+	return reply, true
+}
+
+func (self *Clerk) DeleteShard(s shardcfg.ShardId, num shardcfg.ConfigVersion) rpc.Err {
 	for {
-		var reply shardrpc.DeleteShardReply
-		ok := self.clnt.Call(self.servers[self.leader], "KVServer.DeleteShard", &args, &reply)
-		if !ok || reply.Err == rpc.ErrWrongLeader {
-			self.switchLeader()
+		reply, ok := self.TryDeleteShard(s, num)
+		if !ok {
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
